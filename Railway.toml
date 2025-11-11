@@ -1,0 +1,8 @@
+[build]
+
+[deploy]
+startCommand = "python gex_bot.py"   # runs once for manual deploy
+
+[crons."gex-every-5min"]
+schedule = "*/5 * * * *"
+command = "python gex_bot.py"
