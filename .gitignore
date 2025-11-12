@@ -1,0 +1,16 @@
+# Ignore Python cache
+__pycache__/
+*.pyc
+
+# Ignore local environment / secrets
+.env
+*.env
+
+# Ignore runtime state files
+gex_state.json
+
+# Ignore OS and IDE junk
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
