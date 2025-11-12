@@ -89,6 +89,32 @@ def fetch_chain():
     j = http_get(DERIBIT_SUMMARY_URL, {"currency": CURRENCY, "kind":"option"})
     return j["result"]
 
+
+def nearest_edge_info(spot: float, edges: list):
+    """Return info about the nearest cluster edge (or None)."""
+    if not edges:
+        return None
+    e = min(edges, key=lambda x: abs(x["edge"] - spot))
+    dist  = e["edge"] - spot
+    pct   = abs(dist) / spot * 100.0
+    side  = "above" if dist > 0 else "below"
+    return {
+        "edge": float(e["edge"]),
+        "strength": float(e.get("strength", 0)),
+        "dist": float(dist),
+        "pct": float(pct),
+        "side": side,
+    }
+
+def is_edge_proximity(spot: float, edges: list) -> dict | None:
+    """Return dict with details if spot is close to a strong edge, else None."""
+    info = nearest_edge_info(spot, edges)
+    if not info:
+        return None
+    close = (info["pct"] <= EDGE_PROX_PCT) or (abs(info["dist"]) <= EDGE_PROX_USD)
+    strong = info["strength"] >= EDGE_MIN_STRENGTH
+    return info if (close and strong) else None
+
 # =========================
 # Time helpers
 # =========================
@@ -743,29 +769,6 @@ if __name__ == "__main__":
         save_state(STATEFILE, payload)
 
 
-def nearest_edge_info(spot: float, edges: list):
-    """Return info about the nearest cluster edge (or None)."""
-    if not edges:
-        return None
-    e = min(edges, key=lambda x: abs(x["edge"] - spot))
-    dist  = e["edge"] - spot
-    pct   = abs(dist) / spot * 100.0
-    side  = "above" if dist > 0 else "below"
-    return {
-        "edge": float(e["edge"]),
-        "strength": float(e.get("strength", 0)),
-        "dist": float(dist),
-        "pct": float(pct),
-        "side": side,
-    }
 
-def is_edge_proximity(spot: float, edges: list) -> dict | None:
-    """Return dict with details if spot is close to a strong edge, else None."""
-    info = nearest_edge_info(spot, edges)
-    if not info:
-        return None
-    close = (info["pct"] <= EDGE_PROX_PCT) or (abs(info["dist"]) <= EDGE_PROX_USD)
-    strong = info["strength"] >= EDGE_MIN_STRENGTH
-    return info if (close and strong) else None
 
 
