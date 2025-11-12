@@ -503,6 +503,71 @@ def build_payload_once():
     return payload
 
 # =========================
+# I/O, Telegram, and HTML helpers (add this block)
+# =========================
+def html_escape(s: str) -> str:
+    # Minimal safe escape for Telegram HTML mode
+    return (str(s)
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;"))
+
+def load_prev_state(path: str):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_state(path: str, payload: dict):
+    try:
+        d = os.path.dirname(path)
+        if d and not os.path.exists(d):
+            os.makedirs(d, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[warn] failed to save state: {e}", flush=True)
+
+def telegram_send(text: str, parse_mode=None, chat_id=None):
+    token = BOT_TOKEN
+    chat  = chat_id or CHAT_ID
+    if not token or not chat:
+        return False, "missing token/chat_id"
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    data = {"chat_id": chat, "text": text}
+    if parse_mode:
+        data["parse_mode"] = parse_mode
+        data["disable_web_page_preview"] = True
+    try:
+        r = requests.post(url, json=data, timeout=15)
+        ok = (r.status_code == 200) and r.json().get("ok")
+        return (True, r.text) if ok else (False, r.text)
+    except Exception as e:
+        return False, str(e)
+
+def to_text(payload, prev=None, compact=False):
+    p = payload
+    spot = p["spot"]
+    lines = []
+    lines.append(f"BTC GEX | Spot {fmt_compact_price(spot)}")
+    lines.append(p["bias_line"])
+    flip = p.get("flip_zone")
+    if flip:
+        lines.append(f"Flip ~{fmt_compact_price(flip)}")
+    edges = p.get("edges", [])
+    if edges:
+        e = sorted(edges, key=lambda x: abs(x["edge"]-spot))[0]
+        dist = e["edge"] - spot
+        lines.append(f"Edge ~{fmt_compact_price(e['edge'])} Δ{dist:+.0f} ({(100*dist/spot):+.2f}%)")
+    nb = p.get("nearest_below"); na = p.get("nearest_above")
+    if nb or na:
+        def lab(x): return f"{int(x['strike'])}{'S' if x['gex']>=0 else 'R'}" if x else "—"
+        lines.append(f"Near {lab(nb)}/{lab(na)}")
+    return "\n".join(lines)
+
+
+# =========================
 # Dual-cadence loop
 # =========================
 def dual_loop(interval_sec=300, silent=False):
