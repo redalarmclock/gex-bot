@@ -338,35 +338,45 @@ def to_html(payload, prev=None):
     flip = p['flip_zone']
     net = p['net_gex_smoothed']
     sign = p['net_gex_sign']
+
+    # nearest edge
     edges = p.get("edges", [])
     edge_line = ""
     if edges:
         e = sorted(edges, key=lambda x: abs(x["edge"]-spot))[0]
         dist = e["edge"] - spot
-        edge_line = f"<b>📉 Edge:</b> ~{fmt_compact_price(e['edge'])} | Δ={dist:+.0f} ({(100*dist/spot):+.2f}%) | strength {int(e['strength'])}"
+        edge_line = f"<b>📉 Edge:</b> ~{fmt_compact_price(e['edge'])} | Δ={dist:+.0f} ({(100*dist/spot):+.2f}%) | strength {int(e['strength'])}<br>"
+
     nb = p["nearest_below"]; na = p["nearest_above"]; sb = p["strongest_below"]; sa = p["strongest_above"]
     def lvl(x, arrow):
         if not x: return f"{arrow}—"
-        signc = "−" if x["gex"]<0 else "+"
+        signc = "−" if x["gex"] < 0 else "+"
         return f"{arrow}{fmt_compact_price(x['strike'])}{signc}"
-    near_line = f"<b>🧭 Near:</b> {lvl(nb,'↓')} {lvl(na,'↑')}"
+    near_line   = f"<b>🧭 Near:</b> {lvl(nb,'↓')} {lvl(na,'↑')}"
     strong_line = f"<b>💪 Strong:</b> {lvl(sb,'↓')} {lvl(sa,'↑')}"
+
     top = p["stickies_topN"][:TOP_N_COMPACT]
     top_line = ", ".join([f"{int(x['strike'])}{'R' if x['gex']<0 else 'S'}" for x in top])
-    html = f"""
-<b>📊 BTC GEX Update</b> | <b>Spot</b> {fmt_compact_price(spot)}<br/>
-🕒 {html_escape(ts)} ({html_escape(tz)})<br/><br/>
-<b>🎯 Bias:</b> {html_escape(p['bias_line'])}<br/>
-<b>Γ Net:</b> {human_gex(net)} (<i>{sign}</i>) | <b>Flip:</b> ~{fmt_compact_price(flip) if flip else '—'}<br/>
-{edge_line}<br/>
-{near_line} | {strong_line}<br/>
-<b>🗺 Map:</b> {html_escape(p['trade_map'])}<br/>
-<b>Top |Γ|:</b> {html_escape(top_line)}
-""".strip()
+
+    # strip the leading "Bias: " from the computed text
+    bias_text = p['bias_line']
+    if bias_text.startswith("Bias: "):
+        bias_text = bias_text[6:]
+
+    html = (
+        f"<b>📊 BTC GEX Update</b> | <b>Spot</b> {fmt_compact_price(spot)}<br>"
+        f"🕒 {html_escape(ts)} ({html_escape(tz)})<br><br>"
+        f"<b>🎯 Bias:</b> {html_escape(bias_text)}<br>"
+        f"<b>Γ Net:</b> {human_gex(net)} (<i>{sign}</i>) | <b>Flip:</b> ~{fmt_compact_price(flip) if flip else '—'}<br>"
+        f"{edge_line}"
+        f"{near_line} | {strong_line}<br>"
+        f"<b>🗺 Map:</b> {html_escape(p['trade_map'])}<br>"
+        f"<b>Top |Γ|:</b> {html_escape(top_line)}"
+    )
     if prev:
         changes = summarize_change(p, prev)
         if changes:
-            html += "<br/>\n<b>Δ</b> " + html_escape(" | ".join(changes))
+            html += "<br><b>Δ</b> " + html_escape(" | ".join(changes))
     return html
 
 def telegram_send(text, parse_mode=None):
