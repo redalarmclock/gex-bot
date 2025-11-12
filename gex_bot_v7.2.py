@@ -345,7 +345,10 @@ def to_html(payload, prev=None):
     if edges:
         e = sorted(edges, key=lambda x: abs(x["edge"]-spot))[0]
         dist = e["edge"] - spot
-        edge_line = f"<b>📉 Edge:</b> ~{fmt_compact_price(e['edge'])} | Δ={dist:+.0f} ({(100*dist/spot):+.2f}%) | strength {int(e['strength'])}<br>"
+        edge_line = (
+            f"<b>📉 Edge:</b> ~{fmt_compact_price(e['edge'])} | "
+            f"Δ={dist:+.0f} ({(100*dist/spot):+.2f}%) | strength {int(e['strength'])}"
+        )
 
     nb = p["nearest_below"]; na = p["nearest_above"]; sb = p["strongest_below"]; sa = p["strongest_above"]
     def lvl(x, arrow):
@@ -358,26 +361,30 @@ def to_html(payload, prev=None):
     top = p["stickies_topN"][:TOP_N_COMPACT]
     top_line = ", ".join([f"{int(x['strike'])}{'R' if x['gex']<0 else 'S'}" for x in top])
 
-    # strip the leading "Bias: " from the computed text
+    # strip the leading "Bias: " from the computed text (we add our own label)
     bias_text = p['bias_line']
     if bias_text.startswith("Bias: "):
         bias_text = bias_text[6:]
 
-    html = (
-        f"<b>📊 BTC GEX Update</b> | <b>Spot</b> {fmt_compact_price(spot)}<br>"
-        f"🕒 {html_escape(ts)} ({html_escape(tz)})<br><br>"
-        f"<b>🎯 Bias:</b> {html_escape(bias_text)}<br>"
-        f"<b>Γ Net:</b> {human_gex(net)} (<i>{sign}</i>) | <b>Flip:</b> ~{fmt_compact_price(flip) if flip else '—'}<br>"
-        f"{edge_line}"
-        f"{near_line} | {strong_line}<br>"
-        f"<b>🗺 Map:</b> {html_escape(p['trade_map'])}<br>"
-        f"<b>Top |Γ|:</b> {html_escape(top_line)}"
-    )
+    lines = [
+        f"<b>📊 BTC GEX Update</b> | <b>Spot</b> {fmt_compact_price(spot)}",
+        f"🕒 {html_escape(ts)} ({html_escape(tz)})",
+        "",
+        f"<b>🎯 Bias:</b> {html_escape(bias_text)}",
+        f"<b>Γ Net:</b> {human_gex(net)} (<i>{sign}</i>) | <b>Flip:</b> ~{fmt_compact_price(flip) if flip else '—'}",
+    ]
+    if edge_line:
+        lines.append(edge_line)
+    lines.append(f"{near_line} | {strong_line}")
+    lines.append(f"<b>🗺 Map:</b> {html_escape(p['trade_map'])}")
+    lines.append(f"<b>Top |Γ|:</b> {html_escape(top_line)}")
+
     if prev:
         changes = summarize_change(p, prev)
         if changes:
-            html += "<br><b>Δ</b> " + html_escape(" | ".join(changes))
-    return html
+            lines.append("<b>Δ</b> " + html_escape(" | ".join(changes)))
+
+    return "\n".join(lines)
 
 def telegram_send(text, parse_mode=None):
     if not BOT_TOKEN or not CHAT_ID:
