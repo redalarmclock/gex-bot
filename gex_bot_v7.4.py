@@ -376,6 +376,21 @@ def to_ultra(payload, prev=None):
     regime_emoji = "🔴" if net < 0 else ("🟢" if net > 0 else "⚪")
     regime_word  = "Short" if net < 0 else ("Long" if net > 0 else "Flat")
 
+# --- Volatility risk detection ---
+vol_alert = ""
+if prev and prev["net_gex_smoothed"] > 0:
+    drop_pct = (p["net_gex_smoothed"] - prev["net_gex_smoothed"]) / prev["net_gex_smoothed"]
+    if drop_pct < -0.5 or (p["flip_zone"] - prev["flip_zone"]) > 500 and p["spot"] < p["flip_zone"]:
+        vol_alert = "⚠️ Gamma compression weakening — upside volatility risk increasing"
+if p["net_gex_smoothed"] < 0 and p["flip_zone"] < p["spot"]:
+    vol_alert = "⚠️ Gamma support lost — downside volatility risk increasing"
+elif abs(p["net_gex_smoothed"]) < 1e6:
+    vol_alert = "⚖️ Gamma neutral zone — expect chop / transition"
+
+if vol_alert:
+    message += f"\n{vol_alert}"
+
+
     # edge/flip distance cue
     edges = p.get("edges", [])
     edge_txt = "—"
