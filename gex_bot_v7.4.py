@@ -331,33 +331,58 @@ def build_payload(spot, source, gex_by_strike, stickies, nb_full, na_full, sb, s
     }
 
 def to_ultra(payload, prev=None):
+    """
+    Ultra (5-min) message: short, actionable.
+    - Shows regime (short/long gamma), flip zone, distance to flip, and the next walls.
+    - Two lines max for fast reading.
+    """
     p = payload
     spot = p["spot"]
-    flip = p["flip_zone"]
-    net  = p["net_gex_smoothed"]
-    sign = "Pos" if net>0 else ("Neg" if net<0 else "Neu")
+    flip = p.get("flip_zone")
+    net  = p.get("net_gex_smoothed", 0.0)
 
+    # pick nearest edge (usually flip boundary) for distance cue
     edges = p.get("edges", [])
     edge_txt = "—"
+    dist_txt = "Δ —"
     if edges:
         e = sorted(edges, key=lambda x: abs(x["edge"]-spot))[0]
         dist = e["edge"] - spot
-        edge_txt = f"{fmt_compact_price(e['edge'])} Δ{dist:+.0f} ({(100*dist/spot):+.2f}%)"
+        edge_txt = f"{fmt_compact_price(e['edge'])}"
+        dist_txt = f"Δ {dist:+.0f} ({(100*dist/spot):+.2f}%)"
+    elif flip:
+        dist = flip - spot
+        edge_txt = f"{fmt_compact_price(flip)}"
+        dist_txt = f"Δ {dist:+.0f} ({(100*dist/spot):+.2f}%)"
+    else:
+        dist = 0.0  # safe default
 
-    nb, na = p["nearest_below"], p["nearest_above"]
-    sb, sa = p["strongest_below"], p["strongest_above"]
+    # regime badge + short description
+    regime_emoji = "🔴" if net < 0 else ("🟢" if net > 0 else "⚪")
+    regime_word  = "Short" if net < 0 else ("Long" if net > 0 else "Flat")
+
+    # nearest/strongest levels (compact)
+    nb, na = p.get("nearest_below"), p.get("nearest_above")
+    sb, sa = p.get("strongest_below"), p.get("strongest_above")
     def lab(x):
         if not x: return "—"
         return f"{int(x['strike'])}{'S' if x['gex']>=0 else 'R'}"
 
-    bias_text = p['bias_line']
-    if bias_text.startswith("Bias: "): bias_text = bias_text[6:]
+    # magnet hint: if we have a positive cluster minimum, prefer that; else use flip
+    pos_min = p.get("pos_min")
+    magnet  = pos_min if pos_min is not None else flip
 
-    return (
-        f"BTC {fmt_compact_price(spot)} | {bias_text} | "
-        f"Flip~{fmt_compact_price(flip) if flip else '—'} | Edge~{edge_txt} | "
-        f"NetΓ {human_gex(net)} {sign} | Near {lab(nb)}/{lab(na)} | Strong {lab(sb)}/{lab(sa)}"
+    # line 1: price, regime, flip/edge, distance, netΓ
+    line1 = (
+        f"BTC {fmt_compact_price(spot)} | "
+        f"{regime_emoji} γ {regime_word} <~{fmt_compact_price(flip) if flip else '—'} | "
+        f"🎯 Mag {fmt_compact_price(magnet) if magnet else '—'} | "
+        f"{dist_txt} | Γ {human_gex(net)} {'Neg' if net<0 else 'Pos' if net>0 else 'Neu'}"
     )
+    # line 2: nearby trade map cues
+    line2 = f"📊 Near {lab(nb)}/{lab(na)} | Strong {lab(sb)}/{lab(sa)}"
+
+    return line1 + "\n" + line2
 
 def to_html(payload, prev=None):
     p = payload
