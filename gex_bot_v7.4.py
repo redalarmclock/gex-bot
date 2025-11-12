@@ -376,36 +376,16 @@ def to_ultra(payload, prev=None):
     regime_emoji = "🔴" if net < 0 else ("🟢" if net > 0 else "⚪")
     regime_word  = "Short" if net < 0 else ("Long" if net > 0 else "Flat")
 
-# --- Volatility risk detection ---
-vol_alert = ""
-if prev and prev["net_gex_smoothed"] > 0:
-    drop_pct = (p["net_gex_smoothed"] - prev["net_gex_smoothed"]) / prev["net_gex_smoothed"]
-    if drop_pct < -0.5 or (p["flip_zone"] - prev["flip_zone"]) > 500 and p["spot"] < p["flip_zone"]:
-        vol_alert = "⚠️ Gamma compression weakening — upside volatility risk increasing"
-if p["net_gex_smoothed"] < 0 and p["flip_zone"] < p["spot"]:
-    vol_alert = "⚠️ Gamma support lost — downside volatility risk increasing"
-elif abs(p["net_gex_smoothed"]) < 1e6:
-    vol_alert = "⚖️ Gamma neutral zone — expect chop / transition"
-
-if vol_alert:
-    message += f"\n{vol_alert}"
-
-
     # edge/flip distance cue
     edges = p.get("edges", [])
-    edge_txt = "—"
     dist_txt = "Δ —"
     if edges:
-        e = sorted(edges, key=lambda x: abs(x["edge"]-spot))[0]
+        e = sorted(edges, key=lambda x: abs(x["edge"] - spot))[0]
         dist = e["edge"] - spot
-        edge_txt = f"{fmt_compact_price(e['edge'])}"
         dist_txt = f"Δ {dist:+.0f} ({(100*dist/spot):+.2f}%)"
     elif flip:
         dist = flip - spot
-        edge_txt = f"{fmt_compact_price(flip)}"
         dist_txt = f"Δ {dist:+.0f} ({(100*dist/spot):+.2f}%)"
-    else:
-        dist = 0.0
 
     # magnet hint (pos_min if available; else flip)
     pos_min = p.get("pos_min")
@@ -426,6 +406,8 @@ if vol_alert:
     )
     line2 = f"📊 Near {lab(nb)}/{lab(na)} | Strong {lab(sb)}/{lab(sa)}"
 
+    message = line1 + "\n" + line2
+
     # optional line 3: Edge Proximity tripwire
     prox = is_edge_proximity(spot, edges)
     if prox:
@@ -433,9 +415,27 @@ if vol_alert:
         line3 = (f"⚡ Edge proximity: {fmt_compact_price(spot)} within "
                  f"{prox['pct']:.2f}% of {fmt_compact_price(prox['edge'])} ({prox['side']}) "
                  f"| strength {int(prox['strength'])} | Reversion bias {bias_arrow}")
-        return line1 + "\n" + line2 + "\n" + line3
+        message += "\n" + line3
 
-    return line1 + "\n" + line2
+    # --- Volatility risk detection (stay inside the function) ---
+    vol_alert = ""
+    if prev and prev.get("net_gex_smoothed", 0) > 0:
+        prev_net = prev.get("net_gex_smoothed", 0.0)
+        drop_pct = (net - prev_net) / prev_net if prev_net else 0.0
+        prev_flip = prev.get("flip_zone")
+        if (drop_pct < -0.5) or (flip and prev_flip and (flip - prev_flip) > 500 and spot < flip):
+            vol_alert = "⚠️ Gamma compression weakening — upside volatility risk increasing"
+    if (net < 0) and flip and (flip < spot):
+        vol_alert = "⚠️ Gamma support lost — downside volatility risk increasing"
+    elif abs(net) < 1e6:
+        vol_alert = "⚖️ Gamma neutral zone — expect chop / transition"
+
+    if vol_alert:
+        message += "\n" + vol_alert
+
+    return message
+
+
 
 def to_html(payload, prev=None):
     p = payload
