@@ -506,12 +506,12 @@ def build_payload_once():
 # Dual-cadence loop
 # =========================
 def dual_loop(interval_sec=300, silent=False):
-    \"\"\"
+    """
     Base loop runs every interval_sec seconds.
     Sends:
       - Ultra every ULTRA_INTERVAL_SEC (default: 300 seconds)
       - Pretty every PRETTY_INTERVAL_SEC (default: 3600 seconds)
-    \"\"\"
+    """
     prev = load_prev_state(STATEFILE)
     last_ultra_ts = prev.get("_last_ultra_ts") if prev else None
     last_pretty_ts = prev.get("_last_pretty_ts") if prev else None
