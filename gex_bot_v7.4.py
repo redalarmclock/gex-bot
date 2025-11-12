@@ -22,6 +22,12 @@ TIMEOUT        = int(os.getenv("HTTP_TIMEOUT", "12"))
 SMOOTH_WINDOW  = int(os.getenv("SMOOTH_WINDOW", "1"))  # 0=off
 PRECISION      = int(os.getenv("PRECISION", "2"))
 GEX_SIGN_MODEL = os.getenv("GEX_SIGN_MODEL", "SIMPLE").upper()  # SIMPLE | DEALER_SHORT
+EDGE_PROX_PCT          = float(os.getenv("EDGE_PROX_PCT", "0.5"))     # % distance to edge
+EDGE_PROX_USD          = float(os.getenv("EDGE_PROX_USD", "250"))     # OR absolute USD distance
+EDGE_MIN_STRENGTH      = float(os.getenv("EDGE_MIN_STRENGTH", "3500"))# min edge strength
+EDGE_ALERT_COOLDOWN_SEC= int(os.getenv("EDGE_ALERT_COOLDOWN_SEC","900"))
+PRINT_EDGES_IN_PRETTY  = int(os.getenv("PRINT_EDGES_IN_PRETTY","1"))  # 1=show edges in Pretty
+
 
 # Noise filters
 MIN_EDGE_STRENGTH = float(os.getenv("MIN_EDGE_STRENGTH", "500"))
@@ -332,16 +338,19 @@ def build_payload(spot, source, gex_by_strike, stickies, nb_full, na_full, sb, s
 
 def to_ultra(payload, prev=None):
     """
-    Ultra (5-min) message: short, actionable.
-    - Shows regime (short/long gamma), flip zone, distance to flip, and the next walls.
-    - Two lines max for fast reading.
+    Ultra (5-min): concise regime + flip distance + walls.
+    Adds a 3rd line when spot is within proximity of a strong edge.
     """
-    p = payload
+    p    = payload
     spot = p["spot"]
     flip = p.get("flip_zone")
     net  = p.get("net_gex_smoothed", 0.0)
 
-    # pick nearest edge (usually flip boundary) for distance cue
+    # regime badge
+    regime_emoji = "🔴" if net < 0 else ("🟢" if net > 0 else "⚪")
+    regime_word  = "Short" if net < 0 else ("Long" if net > 0 else "Flat")
+
+    # edge/flip distance cue
     edges = p.get("edges", [])
     edge_txt = "—"
     dist_txt = "Δ —"
@@ -355,32 +364,35 @@ def to_ultra(payload, prev=None):
         edge_txt = f"{fmt_compact_price(flip)}"
         dist_txt = f"Δ {dist:+.0f} ({(100*dist/spot):+.2f}%)"
     else:
-        dist = 0.0  # safe default
+        dist = 0.0
 
-    # regime badge + short description
-    regime_emoji = "🔴" if net < 0 else ("🟢" if net > 0 else "⚪")
-    regime_word  = "Short" if net < 0 else ("Long" if net > 0 else "Flat")
+    # magnet hint (pos_min if available; else flip)
+    pos_min = p.get("pos_min")
+    magnet  = pos_min if pos_min is not None else flip
 
-    # nearest/strongest levels (compact)
+    # nearest/strongest walls
     nb, na = p.get("nearest_below"), p.get("nearest_above")
     sb, sa = p.get("strongest_below"), p.get("strongest_above")
     def lab(x):
         if not x: return "—"
         return f"{int(x['strike'])}{'S' if x['gex']>=0 else 'R'}"
 
-    # magnet hint: if we have a positive cluster minimum, prefer that; else use flip
-    pos_min = p.get("pos_min")
-    magnet  = pos_min if pos_min is not None else flip
-
-    # line 1: price, regime, flip/edge, distance, netΓ
     line1 = (
         f"BTC {fmt_compact_price(spot)} | "
         f"{regime_emoji} γ {regime_word} <~{fmt_compact_price(flip) if flip else '—'} | "
         f"🎯 Mag {fmt_compact_price(magnet) if magnet else '—'} | "
         f"{dist_txt} | Γ {human_gex(net)} {'Neg' if net<0 else 'Pos' if net>0 else 'Neu'}"
     )
-    # line 2: nearby trade map cues
     line2 = f"📊 Near {lab(nb)}/{lab(na)} | Strong {lab(sb)}/{lab(sa)}"
+
+    # optional line 3: Edge Proximity tripwire
+    prox = is_edge_proximity(spot, edges)
+    if prox:
+        bias_arrow = "↑" if net < 0 else "↔"
+        line3 = (f"⚡ Edge proximity: {fmt_compact_price(spot)} within "
+                 f"{prox['pct']:.2f}% of {fmt_compact_price(prox['edge'])} ({prox['side']}) "
+                 f"| strength {int(prox['strength'])} | Reversion bias {bias_arrow}")
+        return line1 + "\n" + line2 + "\n" + line3
 
     return line1 + "\n" + line2
 
@@ -435,6 +447,17 @@ def to_html(payload, prev=None):
         changes = summarize_change(p, prev)
         if changes:
             lines.append("<b>Δ</b> " + html_escape(" | ".join(changes)))
+
+    if PRINT_EDGES_IN_PRETTY:
+        edges = p.get("edges", [])
+        if edges:
+            show = sorted(edges, key=lambda x: -x.get("strength", 0))[:3]
+            edge_lines = " | ".join(
+                [f"~{fmt_compact_price(e['edge'])} (str {int(e.get('strength',0))})"
+                 for e in show]
+            )
+            lines.append(f"<b>Cluster edges:</b> {html_escape(edge_lines)}")
+
 
     return "\n".join(lines)
 
@@ -571,6 +594,46 @@ def telegram_send(text: str, parse_mode=None, chat_id=None):
     except Exception as e:
         return False, str(e)
 
+# =========================
+# Telegram /help command
+# =========================
+HELP_TEXT = """📘 <b>GEX Bot Guide</b>
+
+<b>🔴 Short Gamma (Neg Γ)</b>  
+Dealers hedge <i>with</i> price → volatility expands.  
+• Fade only at strong walls  
+• Breakouts can run far  
+• Tight stops, fast profit-taking  
+
+<b>🟢 Long Gamma (Pos Γ)</b>  
+Dealers hedge <i>against</i> price → volatility compresses.  
+• Mean-reversion near magnet  
+• Expect choppy range trades  
+
+<b>⚪ Neutral / Mixed</b>  
+Transition zone → choppy & unpredictable.  
+
+<b>Key terms</b>:  
+• <b>Flip</b>: regime boundary  
+• <b>Mag</b>: price magnet (center of gravity)  
+• <b>Δ</b>: distance to flip (% urgency)  
+• <b>R/S</b>: Resistance/Support walls  
+
+Use the Ultra feed for 5-min flow cues.  
+Use Pretty feed (hourly) for deep context.
+"""
+
+def telegram_process_command(msg_text: str, chat_id=None):
+    """
+    Process Telegram commands like /help or /status.
+    """
+    text = msg_text.strip().lower()
+    if text.startswith("/help"):
+        telegram_send(HELP_TEXT, parse_mode="HTML", chat_id=chat_id)
+        return True
+    return False
+
+
 def to_text(payload, prev=None, compact=False):
     p = payload
     spot = p["spot"]
@@ -678,4 +741,31 @@ if __name__ == "__main__":
         payload = build_payload_once()
         print(to_ultra(payload, prev=prev), flush=True)
         save_state(STATEFILE, payload)
+
+
+def nearest_edge_info(spot: float, edges: list):
+    """Return info about the nearest cluster edge (or None)."""
+    if not edges:
+        return None
+    e = min(edges, key=lambda x: abs(x["edge"] - spot))
+    dist  = e["edge"] - spot
+    pct   = abs(dist) / spot * 100.0
+    side  = "above" if dist > 0 else "below"
+    return {
+        "edge": float(e["edge"]),
+        "strength": float(e.get("strength", 0)),
+        "dist": float(dist),
+        "pct": float(pct),
+        "side": side,
+    }
+
+def is_edge_proximity(spot: float, edges: list) -> dict | None:
+    """Return dict with details if spot is close to a strong edge, else None."""
+    info = nearest_edge_info(spot, edges)
+    if not info:
+        return None
+    close = (info["pct"] <= EDGE_PROX_PCT) or (abs(info["dist"]) <= EDGE_PROX_USD)
+    strong = info["strength"] >= EDGE_MIN_STRENGTH
+    return info if (close and strong) else None
+
 
