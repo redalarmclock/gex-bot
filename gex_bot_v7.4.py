@@ -684,7 +684,8 @@ def to_text(payload, prev=None, compact=False):
 # =========================
 # Dual-cadence loop
 # =========================
-def dual_loop(interval_sec=300, silent=False):
+def dual_loop(interval_sec=300, silent=False, burst_start=False):
+
     """
     Base loop runs every interval_sec seconds.
     Sends:
@@ -694,6 +695,39 @@ def dual_loop(interval_sec=300, silent=False):
     prev = load_prev_state(STATEFILE)
     last_ultra_ts = prev.get("_last_ultra_ts") if prev else None
     last_pretty_ts = prev.get("_last_pretty_ts") if prev else None
+
+    # --- Burst-start: push both messages right away on deploy ---
+    if burst_start:
+        try:
+            payload = build_payload_once()
+
+            # Pretty (HTML) first
+            text_pretty = to_html(payload, prev=prev)
+            ok_p, info_p = telegram_send(text_pretty, parse_mode="HTML")
+            if not ok_p and "can't parse entities" in str(info_p).lower():
+                telegram_send(to_text(payload, prev=prev, compact=True), parse_mode=None)
+
+            # Ultra (plain text)
+            text_ultra = to_ultra(payload, prev=prev)
+            telegram_send(text_ultra, parse_mode=None)
+
+            # Save state & timestamps so cadence continues cleanly
+            now = time.time()
+            payload["_last_pretty_ts"] = now
+            payload["_last_ultra_ts"]  = now
+            save_state(STATEFILE, payload)
+            prev = payload
+            last_pretty_ts = now
+            last_ultra_ts  = now
+
+            if not silent:
+                print("[startup] Burst-start sent Ultra + Pretty", flush=True)
+
+        except Exception as e:
+            if not silent:
+                print(f"[startup] burst failed: {e}", flush=True)
+
+
 
     while True:
         try:
@@ -755,18 +789,22 @@ if __name__ == "__main__":
                         help="Base loop sleep (seconds). Keep 300 for 5m cadence.")
     parser.add_argument("--silent", action="store_true")
     parser.add_argument("--statefile", type=str, default=None)
+    parser.add_argument("--burst-start", action="store_true",
+                        help="Send Ultra + Pretty immediately on startup, then continue cadence")
+
     args = parser.parse_args()
 
     # We no longer reassign STATEFILE dynamically — use env GEX_STATEFILE instead
     # (for example: GEX_STATEFILE=/data/gex_state.json in Railway)
 
     if args.dual:
-        dual_loop(interval_sec=args.interval, silent=args.silent)
+        dual_loop(interval_sec=args.interval, silent=args.silent, burst_start=args.burst_start)
     else:
         prev = load_prev_state(STATEFILE)
         payload = build_payload_once()
         print(to_ultra(payload, prev=prev), flush=True)
         save_state(STATEFILE, payload)
+
 
 
 
