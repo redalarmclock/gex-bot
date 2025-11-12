@@ -568,20 +568,24 @@ def dual_loop(interval_sec=300, silent=False):
 # =========================
 if __name__ == "__main__":
     import argparse
-    p = argparse.ArgumentParser()
-    p.add_argument("--dual", action="store_true", help="Run dual cadence: ultra every 5m, pretty every 1h")
-    p.add_argument("--interval", type=int, default=300, help="base loop sleep (seconds). Keep at 300 for 5m.")
-    p.add_argument("--silent", action="store_true")
-    p.add_argument("--statefile", type=str, default=STATEFILE)
-    args = p.parse_args()
 
-    if args.statefile:
-        global STATEFILE
-        STATEFILE = args.statefile
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dual", action="store_true",
+                        help="Run dual cadence: ultra every 5m, pretty every 1h")
+    parser.add_argument("--interval", type=int, default=300,
+                        help="Base loop sleep (seconds). Keep 300 for 5m cadence.")
+    parser.add_argument("--silent", action="store_true")
+    parser.add_argument("--statefile", type=str, default=None)
+    args = parser.parse_args()
+
+    # We no longer reassign STATEFILE dynamically — use env GEX_STATEFILE instead
+    # (for example: GEX_STATEFILE=/data/gex_state.json in Railway)
 
     if args.dual:
         dual_loop(interval_sec=args.interval, silent=args.silent)
     else:
+        prev = load_prev_state(STATEFILE)
         payload = build_payload_once()
-        print(to_ultra(payload, prev=load_prev_state(args.statefile)), flush=True)
-        save_state(args.statefile, payload)
+        print(to_ultra(payload, prev=prev), flush=True)
+        save_state(STATEFILE, payload)
+
