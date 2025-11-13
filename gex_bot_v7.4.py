@@ -571,7 +571,6 @@ def maybe_heartbeat():
     prev = load_prev_state(STATEFILE)
     if prev and prev.get(hb_key): return
     if now.hour == HEARTBEAT_HOUR:
-        telegram_send(f"✅ Heartbeat {now.isoformat(timespec='minutes')} ({TZ_NAME})")
         p = prev or {}
         p[hb_key] = True
         save_state(STATEFILE, p)
