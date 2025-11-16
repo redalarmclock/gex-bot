@@ -334,34 +334,69 @@ def summarize_change(cur, prev):
 # =========================
 # Payload & formatting
 # =========================
-def build_payload(spot, source, gex_by_strike, stickies, nb_full, na_full, sb, sa):
-    strikes = sorted(source.keys())
-    negs = [k for k in strikes if source[k] < 0]
-    poss = [k for k in strikes if source[k] > 0]
-    flip_zone = None
-    neg_max = max(negs) if negs else None
-    pos_min = min(poss) if poss else None
-    if neg_max is not None and pos_min is not None:
-        flip_zone = (neg_max + pos_min) / 2.0 if pos_min > neg_max else float(neg_max)
-    net_raw = net_gex(gex_by_strike)
-    net_smth = net_gex(source)
-    bias_line = build_bias_line(spot, net_smth, flip_zone, pos_min)
-    edges = [e for e in detect_edges(source) if e["strength"] >= MIN_EDGE_STRENGTH]
+def build_neutral_payload(spot: float):
+    """
+    Build a minimal but safe 'neutral' payload when we can't get any GEX map.
+    This keeps Ultra/Pretty happy without faking levels.
+    """
     now = datetime.now(TZ).isoformat()
-    return {
-        "timestamp_local": now,
-        "meta": {"currency": CURRENCY, "index": INDEX_NAME, "tz": TZ_NAME, "week_only": WEEK_ONLY, "smoothed_window": SMOOTH_WINDOW},
-        "spot": spot,
-        "nearest_below": nb_full, "nearest_above": na_full,
-        "strongest_below": sb, "strongest_above": sa,
-        "stickies_topN": [{"strike": s.strike, "gex": s.gex, "label": s.label} for s in stickies],
-        "trade_map": format_trade_map(stickies, spot, width=6),
-        "flip_zone": flip_zone, "pos_min": pos_min,
-        "net_gex_raw": net_raw, "net_gex_smoothed": net_smth,
-        "net_gex_sign": "Positive" if net_smth > 0 else ("Negative" if net_smth < 0 else "Neutral"),
-        "bias_line": bias_line, "edges": edges
+    meta = {
+        "currency": CURRENCY,
+        "index": INDEX_NAME,
+        "tz": TZ_NAME,
+        "week_only": WEEK_ONLY,
+        "smoothed_window": SMOOTH_WINDOW,
     }
 
+    return {
+        "timestamp_local": now,
+        "meta": meta,
+        "spot": spot,
+        "nearest_below": None,
+        "nearest_above": None,
+        "strongest_below": None,
+        "strongest_above": None,
+        "stickies_topN": [],
+        "trade_map": "(no GEX map — neutral fallback)",
+        "flip_zone": None,
+        "pos_min": None,
+        "net_gex_raw": 0.0,
+        "net_gex_smoothed": 0.0,
+        "net_gex_sign": "Neutral",
+        "bias_line": "Bias: Gamma map unavailable — treating as neutral.",
+        "edges": [],
+    }
+
+def build_payload_once():
+    spot = get_spot()
+    chain = fetch_chain()
+
+    # 1) First attempt: week-only map (existing behaviour)
+    gex_by_strike = aggregate_gex(chain, spot, only_this_week=WEEK_ONLY)
+
+    # If week-only filter nukes everything (e.g. on weekends),
+    # fall back to full chain (all expiries)
+    if not gex_by_strike:
+        print("[warn] aggregate_gex returned empty map with WEEK_ONLY=1; falling back to full chain.", flush=True)
+        gex_by_strike = aggregate_gex(chain, spot, only_this_week=False)
+
+    # If still nothing, return a clean neutral payload instead of a fake 0 map
+    if not gex_by_strike:
+        print("[warn] aggregate_gex returned empty map even for full chain; using neutral fallback payload.", flush=True)
+        return build_neutral_payload(spot)
+
+    # 2) Smoothing as before
+    gex_smoothed = smooth_gex(gex_by_strike, window=SMOOTH_WINDOW)
+    # If smoothing wiped everything, fall back to raw
+    source = gex_smoothed if (SMOOTH_WINDOW > 0 and gex_smoothed) else gex_by_strike
+
+    stickies = build_stickies(source, TOP_N)
+    nb_full, na_full = nearest_levels_all(gex_by_strike, spot)
+    sb, sa = strongest_levels(source, spot)
+
+    payload = build_payload(spot, source, gex_by_strike, stickies, nb_full, na_full, sb, sa)
+    return payload
+    
 def to_ultra(payload, prev=None):
     """
     Ultra (5-min): concise regime + flip distance + walls.
