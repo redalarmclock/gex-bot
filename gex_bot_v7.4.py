@@ -1,7 +1,11 @@
-import os, math, time, json, requests
+import os
+import math
+import time
+import json
+import requests
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 # =========================
@@ -13,15 +17,14 @@ TZ = ZoneInfo(TZ_NAME)
 CURRENCY   = os.getenv("DERIBIT_CCY", "BTC")
 INDEX_NAME = os.getenv("DERIBIT_INDEX", "btc_usd")
 
-TOP_N          = int(os.getenv("TOP_N", "14"))
-INTERVAL_SEC   = int(os.getenv("INTERVAL_SEC", "300"))      # Ultra (default 5m)
-PRETTY_INTERVAL_SEC = int(os.getenv("PRETTY_INTERVAL_SEC", "900"))  # Pretty (default 15m)
-HEARTBEAT_SEC  = int(os.getenv("HEARTBEAT_SEC", "300"))
+TOP_N                = int(os.getenv("TOP_N", "14"))
+INTERVAL_SEC         = int(os.getenv("INTERVAL_SEC", "300"))      # Ultra (default 5m)
+PRETTY_INTERVAL_SEC  = int(os.getenv("PRETTY_INTERVAL_SEC", "900"))  # Pretty (default 15m)
+HEARTBEAT_SEC        = int(os.getenv("HEARTBEAT_SEC", "300"))
 
-DERIBIT_BASE   = os.getenv("DERIBIT_BASE", "https://www.deribit.com")
-MIN_ABS_GEX    = float(os.getenv("MIN_ABS_GEX", "5e5"))
-MIN_CLUSTER_SUM= float(os.getenv("MIN_CLUSTER_SUM", "1e6"))
-SMOOTH_ALPHA   = float(os.getenv("SMOOTH_ALPHA", "0.3"))  # for net GEX smoothing
+DERIBIT_BASE         = os.getenv("DERIBIT_BASE", "https://www.deribit.com")
+MIN_ABS_GEX          = float(os.getenv("MIN_ABS_GEX", "5e5"))
+SMOOTH_ALPHA         = float(os.getenv("SMOOTH_ALPHA", "0.3"))  # for net GEX smoothing
 
 # Telegram (support old env names too)
 BOT_TOKEN = (
@@ -48,9 +51,9 @@ PRETTY_CHAT_ID = (
 print(f"[debug] BOT_TOKEN loaded? {'YES' if BOT_TOKEN else 'NO'} | CHAT_ID={CHAT_ID}", flush=True)
 
 # URLs
-DERIBIT_INDEX_URL   = "https://www.deribit.com/api/v2/public/get_index_price"
-DERIBIT_SUMMARY_URL = "https://www.deribit.com/api/v2/public/get_book_summary_by_instrument"
-DERIBIT_INSTRUMENTS_URL = "https://www.deribit.com/api/v2/public/get_instruments"
+DERIBIT_INDEX_URL       = f"{DERIBIT_BASE}/api/v2/public/get_index_price"
+DERIBIT_SUMMARY_URL     = f"{DERIBIT_BASE}/api/v2/public/get_book_summary_by_instrument"
+DERIBIT_INSTRUMENTS_URL = f"{DERIBIT_BASE}/api/v2/public/get_instruments"
 
 # =========================
 # HTTP helpers
@@ -75,21 +78,21 @@ class OptionPoint:
 
 def get_deribit_index():
     data = http_get(
-        f"{DERIBIT_BASE}/api/v2/public/get_index_price",
+        DERIBIT_INDEX_URL,
         params={"index_name": INDEX_NAME}
     )
     return data["result"]["index_price"]
 
 def get_instruments(currency: str):
     data = http_get(
-        f"{DERIBIT_BASE}/api/v2/public/get_instruments",
+        DERIBIT_INSTRUMENTS_URL,
         params={"currency": currency, "kind": "option", "expired": False}
     )
     return data["result"]
 
 def get_book_summary(instrument_name: str):
     data = http_get(
-        f"{DERIBIT_BASE}/api/v2/public/get_book_summary_by_instrument",
+        DERIBIT_SUMMARY_URL,
         params={"instrument_name": instrument_name}
     )
     return data["result"][0]
@@ -97,12 +100,10 @@ def get_book_summary(instrument_name: str):
 def approximate_gex_from_summary(summary: dict) -> float:
     """
     Approximate GEX from Deribit summary:
-    Use open_interest, mark_iv, delta, gamma, etc. if present.
-    This is simplified and tuned for relative structure, not exact notional.
+    Use open_interest * gamma as a simple proxy.
     """
-    oi = summary.get("open_interest", 0.0)
-    gamma = summary.get("gamma", 0.0)
-    # notional scale factor:
+    oi    = summary.get("open_interest", 0.0) or 0.0
+    gamma = summary.get("gamma", 0.0) or 0.0
     return oi * gamma
 
 def build_option_points(currency: str) -> list:
@@ -122,6 +123,7 @@ def build_option_points(currency: str) -> list:
             summary = get_book_summary(name)
             gex = approximate_gex_from_summary(summary)
         except Exception:
+            # network / API hiccup for this instrument; skip it
             continue
         if abs(gex) < MIN_ABS_GEX:
             continue
@@ -260,25 +262,39 @@ def nearest_edge_info(spot: float, edges: list):
     return e
 
 def pick_ref_level(spot, flip, edges, magnet, nb, na, sb, sa):
-    """Choose a sensible reference level for Δ when flip is missing."""
+    """
+    Choose a sensible reference level for Δ when flip is missing.
+    Priority:
+      1) flip
+      2) nearest edge
+      3) magnet (pos_min)
+      4) nearest wall (nb/na)
+      5) strongest wall (sb/sa)
+    """
     candidates = []
+
     # 1) flip
     if flip:
         candidates.append(flip)
+
     # 2) nearest edge
     if edges:
         ne = nearest_edge_info(spot, edges)
         if ne:
             candidates.append(ne["edge"])
+
     # 3) magnet
     if magnet:
         candidates.append(magnet)
-    # 4) nearest/strongest walls
+
+    # 4) nearest & strongest walls
     for x in (nb, na, sb, sa):
         if x and x.get("strike") is not None:
             candidates.append(x["strike"])
+
     if not candidates:
         return None
+
     return min(candidates, key=lambda lvl: abs(lvl - spot))
 
 # =========================
@@ -296,10 +312,7 @@ def send_telegram_message(text, chat_id=None):
     is_pretty = text.lstrip().startswith("BTC GEX Update")
 
     if is_pretty:
-        # Pretty → send as plain text, strip any residual HTML-ish tags
-        text = text.replace("<br>", "\n")
-        text = text.replace("<b>", "").replace("</b>", "")
-        text = text.replace("<i>", "").replace("</i>", "")
+        # Pretty → send as plain text
         parse_mode = None
     else:
         # Ultra → short, clean, safe for Markdown
@@ -441,7 +454,7 @@ def to_ultra(payload, prev=None):
 
     # --- Volatility risk detection ---
     vol_alert = ""
-    if prev and prev.get("net_gex_smoothed", 0) > 0:
+    if prev and prev.get("net_gex_smoothed", 0) and prev.get("net_gex_smoothed", 0) > 0:
         prev_net  = prev.get("net_gex_smoothed", 0.0)
         drop_pct  = (net - prev_net) / prev_net if prev_net else 0.0
         prev_flip = prev.get("flip_zone")
@@ -460,7 +473,8 @@ def to_ultra(payload, prev=None):
 
 def to_html(payload, tz: ZoneInfo = TZ) -> str:
     """
-    Pretty (15-min or on-demand): more verbose HTML-ish summary for a separate channel.
+    Pretty (15-min or on-demand): more verbose summary for a separate channel.
+    Returns plain text with line breaks.
     """
     p = payload
     spot = p["spot"]
@@ -493,7 +507,7 @@ def to_html(payload, tz: ZoneInfo = TZ) -> str:
     dt = datetime.fromtimestamp(ts, tz=tz)
     dt_str = dt.isoformat()
 
-    flip_txt = fmt_compact_price(flip) if flip else "—"
+    flip_txt    = fmt_compact_price(flip) if flip else "—"
     pos_min_txt = fmt_compact_price(pos_min) if pos_min else "—"
 
     nb_txt = f"{int(nb['strike'])}{'S' if nb['gex'] >= 0 else 'R'}" if nb else "—"
@@ -522,8 +536,7 @@ def to_html(payload, tz: ZoneInfo = TZ) -> str:
 
     lines.append(f"Bias: {bias}")
 
-    # We used to return HTML with <br>, but for Telegram reliability we now send plain text.
-    return "<br>".join(lines)
+    return "\n".join(lines)
 
 # =========================
 # Main loop and state
@@ -587,26 +600,26 @@ def dual_loop(interval_sec=INTERVAL_SEC,
     while True:
         try:
             now = time.time()
+
             # Build payload once per loop iteration
             payload = build_payload(CURRENCY, INDEX_NAME, prev_payload)
-            print("[debug strike_gex]", payload["strike_gex"], flush=True)
-print("[debug edges]", payload["edges"], flush=True)
-print("[debug walls]", payload["walls_ordered"], flush=True)
-print("[debug raw net]", payload["net_gex_raw"], flush=True)
+
+            # Keep a copy for "prev" before updating
+            ultra_prev = prev_payload
             prev_payload = payload
 
             # Ultra every interval_sec
             if (now - last_ultra_ts) >= interval_sec:
-                ultra_msg = to_ultra(payload, prev=prev_payload)
+                ultra_msg = to_ultra(payload, prev=ultra_prev)
                 print(ultra_msg, flush=True)
                 send_telegram_message(ultra_msg, CHAT_ID)
                 last_ultra_ts = now
 
             # Pretty every pretty_interval_sec
             if (now - last_pretty_ts) >= pretty_interval_sec:
-                pretty_html = to_html(payload, tz=TZ)
-                print("[pretty]", pretty_html, flush=True)
-                send_telegram_message(pretty_html, PRETTY_CHAT_ID)
+                pretty_text = to_html(payload, tz=TZ)
+                print("[pretty]", pretty_text, flush=True)
+                send_telegram_message(pretty_text, PRETTY_CHAT_ID)
                 last_pretty_ts = now
 
             # Heartbeat
@@ -643,13 +656,13 @@ def main():
         prev_payload = None
         payload = build_payload(CURRENCY, INDEX_NAME, prev_payload)
         ultra_msg = to_ultra(payload, prev=None)
-        pretty_html = to_html(payload, tz=TZ)
+        pretty_text = to_html(payload, tz=TZ)
 
         print(ultra_msg, flush=True)
-        print(pretty_html, flush=True)
+        print(pretty_text, flush=True)
 
         send_telegram_message(ultra_msg, CHAT_ID)
-        send_telegram_message(pretty_html, PRETTY_CHAT_ID)
+        send_telegram_message(pretty_text, PRETTY_CHAT_ID)
         return
 
     # Dual loop mode (default for production)
