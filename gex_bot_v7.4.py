@@ -589,6 +589,10 @@ def dual_loop(interval_sec=INTERVAL_SEC,
             now = time.time()
             # Build payload once per loop iteration
             payload = build_payload(CURRENCY, INDEX_NAME, prev_payload)
+            print("[debug strike_gex]", payload["strike_gex"], flush=True)
+print("[debug edges]", payload["edges"], flush=True)
+print("[debug walls]", payload["walls_ordered"], flush=True)
+print("[debug raw net]", payload["net_gex_raw"], flush=True)
             prev_payload = payload
 
             # Ultra every interval_sec
