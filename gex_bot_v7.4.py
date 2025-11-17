@@ -14,70 +14,49 @@ CURRENCY   = os.getenv("DERIBIT_CCY", "BTC")
 INDEX_NAME = os.getenv("DERIBIT_INDEX", "btc_usd")
 
 TOP_N          = int(os.getenv("TOP_N", "14"))
-TOP_N_COMPACT  = int(os.getenv("TOP_N_COMPACT", "8"))
 WEEK_ONLY      = os.getenv("WEEK_ONLY", "1") == "1"
-RETRIES        = int(os.getenv("HTTP_RETRIES", "3"))
-TIMEOUT        = int(os.getenv("HTTP_TIMEOUT", "12"))
-SMOOTH_WINDOW  = int(os.getenv("SMOOTH_WINDOW", "1"))  # 0=off
-PRECISION      = int(os.getenv("PRECISION", "2"))
-GEX_SIGN_MODEL = os.getenv("GEX_SIGN_MODEL", "SIMPLE").upper()  # SIMPLE | DEALER_SHORT
-EDGE_PROX_PCT          = float(os.getenv("EDGE_PROX_PCT", "0.5"))     # % distance to edge
-EDGE_PROX_USD          = float(os.getenv("EDGE_PROX_USD", "250"))     # OR absolute USD distance
-EDGE_MIN_STRENGTH      = float(os.getenv("EDGE_MIN_STRENGTH", "3500"))# min edge strength
-EDGE_ALERT_COOLDOWN_SEC= int(os.getenv("EDGE_ALERT_COOLDOWN_SEC","900"))
-PRINT_EDGES_IN_PRETTY  = int(os.getenv("PRINT_EDGES_IN_PRETTY","1"))  # 1=show edges in Pretty
+SMOOTH_WINDOW  = int(os.getenv("SMOOTH_WINDOW", "2"))      # strikes on each side
+SMOOTH_ENABLED = os.getenv("SMOOTH_ENABLED", "1") == "1"
 
-# Noise filters
-MIN_EDGE_STRENGTH = float(os.getenv("MIN_EDGE_STRENGTH", "500"))
-MIN_DELTA_PCT     = float(os.getenv("MIN_DELTA_PCT", "0.10"))
+# Vol regime & edge proximity config
+EDGE_PROX_PCT = float(os.getenv("EDGE_PROX_PCT", "0.5"))     # % distance to edge
+EDGE_PROX_USD = float(os.getenv("EDGE_PROX_USD", "500"))     # absolute USD distance
+EDGE_STRENGTH_MIN = float(os.getenv("EDGE_STRENGTH_MIN", "0"))
+
+# Alerts config
+ALERTS           = os.getenv("ALERTS_ENABLED","1")=="1"
+ALERT_EDGE_PCT   = float(os.getenv("ALERT_EDGE_PCT","0.3"))
+ALERT_EDGE_USD   = float(os.getenv("ALERT_EDGE_USD","250"))
+ALERT_FLIP_SHIFT = float(os.getenv("ALERT_FLIP_SHIFT","1000"))
+ALERT_NET_SIGN   = os.getenv("ALERT_NET_SIGN","1")=="1"
+ALERT_LVL_CHANGE = os.getenv("ALERT_LVL_CHANGE","1")=="1"
+ALERT_COOLDOWN_SEC = int(os.getenv("ALERT_COOLDOWN_SEC","900"))
+ALERTS_CHAT_ID   = os.getenv("ALERTS_CHAT_ID","")
 
 # Telegram
-CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-BOT_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN","")
+CHAT_ID   = os.getenv("CHAT_ID","")
+PRETTY_CHAT_ID = os.getenv("PRETTY_CHAT_ID", CHAT_ID)
 
-# State
-STATEFILE = os.getenv("GEX_STATEFILE", "gex_state.json")
-
-# Alerts / Posting rules
-ALERTS             = os.getenv("ALERTS","0")=="1"
-ALERT_EDGE_PCT     = float(os.getenv("ALERT_EDGE_PCT","0.35"))
-ALERT_EDGE_USD     = float(os.getenv("ALERT_EDGE_USD","0"))
-ALERT_FLIP_SHIFT   = float(os.getenv("ALERT_FLIP_SHIFT","500"))
-ALERT_COOLDOWN_SEC = int(os.getenv("ALERT_COOLDOWN_SEC","900"))
-ALERT_CHAT_ID      = os.getenv("TELEGRAM_ALERT_CHAT_ID", "").strip() or CHAT_ID
-
-POST_ON_MOVE_USD   = float(os.getenv("POST_ON_MOVE_USD","0"))
-POST_ON_EDGE_CHANGE= os.getenv("POST_ON_EDGE_CHANGE","1")=="1"
-POST_ON_SIGN_CHANGE= os.getenv("POST_ON_SIGN_CHANGE","1")=="1"
-
-# Ops niceties
-JITTER_SEC      = int(os.getenv("JITTER_SEC","0"))
-HEARTBEAT_HOUR  = int(os.getenv("HEARTBEAT_HOUR","0"))  # 0=off
-
-# Dual cadence defaults (you can override via env)
-ULTRA_INTERVAL_SEC   = int(os.getenv("ULTRA_INTERVAL_SEC", "300"))   # 5 minutes
-PRETTY_INTERVAL_SEC  = int(os.getenv("PRETTY_INTERVAL_SEC", "3600")) # 1 hour
-
-# Deribit endpoints
-DERIBIT_SUMMARY_URL = "https://www.deribit.com/api/v2/public/get_book_summary_by_currency"
+# URLs
 DERIBIT_INDEX_URL   = "https://www.deribit.com/api/v2/public/get_index_price"
-
-MONTHS = {"JAN":1,"FEB":2,"MAR":3,"APR":4,"MAY":5,"JUN":6,"JUL":7,"AUG":8,"SEP":9,"OCT":10,"NOV":11,"DEC":12}
+DERIBIT_SUMMARY_URL = "https://www.deribit.com/api/v2/public/get_book_summary_by_currency"
+STATEFILE           = os.getenv("STATEFILE", "gex_state.json")
 
 # =========================
-# HTTP helpers
+# Helpers
 # =========================
-def http_get(url, params):
-    last_err = None
-    for attempt in range(1, RETRIES+1):
+
+def http_get(url, params=None, timeout=10):
+    for attempt in range(3):
         try:
-            r = requests.get(url, params=params, timeout=TIMEOUT)
-            r.raise_for_status()
-            return r.json()
+            resp = requests.get(url, params=params, timeout=timeout)
+            if resp.ok:
+                return resp.json()
         except Exception as e:
-            last_err = e
-            time.sleep(min(2**attempt, 8))
-    raise last_err
+            print(f"[warn] HTTP attempt {attempt+1} failed: {e}", flush=True)
+        time.sleep(1 + attempt)
+    raise RuntimeError(f"GET {url} failed after retries")
 
 def get_spot():
     j = http_get(DERIBIT_INDEX_URL, {"index_name": INDEX_NAME})
@@ -109,42 +88,89 @@ def is_edge_proximity(spot: float, edges: list) -> dict | None:
     if not info:
         return None
     close = (info["pct"] <= EDGE_PROX_PCT) or (abs(info["dist"]) <= EDGE_PROX_USD)
-    strong = info["strength"] >= EDGE_MIN_STRENGTH
-    return info if (close and strong) else None
+    strong = info["strength"] >= EDGE_STRENGTH_MIN
+    if close and strong:
+        return info
+    return None
 
 # =========================
 # Time helpers
 # =========================
+
+def kuching_now():
+    return datetime.now(TZ)
+
 def kuching_today():
-    return datetime.now(TZ).date()
+    n = kuching_now()
+    return datetime(year=n.year, month=n.month, day=n.day, tzinfo=TZ)
 
-def week_window_local(d: datetime):
-    monday = d - timedelta(days=d.weekday())
-    sunday = monday + timedelta(days=6)
-    return monday, sunday
+def week_window_local():
+    """
+    Define the "week window" for WEEK_ONLY filtering.
+    Returns (start_dt, end_dt) in local tz.
+    """
+    today = kuching_today()
+    # Assume we want from Monday 00:00 to next Monday 00:00
+    weekday = today.weekday()  # Monday=0
+    week_start = today - timedelta(days=weekday)
+    week_end   = week_start + timedelta(days=7)
+    return week_start, week_end
 
-def parse_expiry_date(token: str):
+def parse_expiry_date(instrument_name):
+    """
+    Deribit instrument like 'BTC-29NOV24-80000-C'
+    Extract the expiry date (UTC-agnostic; we only need the date).
+    """
     try:
-        day = int(token[:2]); mon = MONTHS[token[2:5].upper()]; year = 2000 + int(token[5:7])
-        return datetime(year, mon, day, 8, 0, 0, tzinfo=timezone.utc)  # 08:00 UTC
+        parts = instrument_name.split("-")
+        if len(parts) < 3:
+            return None
+        date_part = parts[1]
+        # e.g. 29NOV24
+        dt = datetime.strptime(date_part, "%d%b%y")
+        # treat expiry as local midnight of that date
+        return dt.replace(tzinfo=TZ)
     except Exception:
         return None
 
 # =========================
-# Greeks / GEX
+# Greeks/GEX
 # =========================
-def bs_gamma(S, K, T, iv):
-    if not all([S and K and T and iv]) or S<=0 or K<=0 or T<=0 or iv<=0:
-        return None
-    d1 = (math.log(S/K) + 0.5*iv*iv*T) / (iv*math.sqrt(T))
-    pdf = math.exp(-0.5*d1*d1) / math.sqrt(2*math.pi)
-    return pdf / (S * iv * math.sqrt(T))
 
-def gex_sign(cp: str):
-    cp = cp.upper()
-    if GEX_SIGN_MODEL == "DEALER_SHORT":
-        return -1.0 if cp == "C" else 1.0
-    return 1.0 if cp == "C" else -1.0
+def bs_gamma(spot, strike, iv, t_years, call_put):
+    """
+    Rough Black-Scholes gamma for call/put.
+    Spot, strike, iv in decimals, time in years.
+    """
+    try:
+        if spot <= 0 or strike <= 0 or iv <= 0 or t_years <= 0:
+            return 0.0
+        # d1 = [ln(S/K) + 0.5 σ^2 T] / (σ sqrt(T))
+        import math
+        d1 = (math.log(spot/strike) + 0.5*(iv**2)*t_years) / (iv*math.sqrt(t_years))
+        # standard normal pdf
+        pdf = math.exp(-0.5*d1*d1) / math.sqrt(2*math.pi)
+        gamma = pdf / (spot * iv * math.sqrt(t_years))
+        return gamma
+    except Exception:
+        return 0.0
+
+def gex_sign(option_type, sign_model="SIMPLE"):
+    """
+    Return +1/-1 sign multiplier for GEX contribution.
+    sign_model can be extended, but default is simple:
+      Calls: dealer short, Puts: dealer short => net negative for both.
+    """
+    if sign_model == "SIMPLE":
+        # Dealers short both calls & puts on average -> negative convexity
+        return -1.0
+    elif sign_model == "DEALER_SHORT":
+        # More nuanced sign model could go here
+        if option_type.upper() == "C":
+            return -1.0
+        else:
+            return -1.0
+    return -1.0
 
 @dataclass
 class Sticky:
@@ -152,57 +178,68 @@ class Sticky:
     gex: float
     label: str
 
-def aggregate_gex(chain_rows, spot, only_this_week=True):
-    today_local = kuching_today()
-    mon, sun = week_window_local(today_local)
+def aggregate_gex(chain, spot, now=None, week_only=True, sign_model="SIMPLE"):
+    """
+    Aggregate GEX by strike.
+    chain: list of Deribit summaries.
+    Returns dict: {strike: gex_value}
+    """
+    if now is None:
+        now = kuching_now()
+
     gex_by_strike = defaultdict(float)
-    for row in chain_rows:
-        instr = row.get("instrument_name","")
-        parts = instr.split("-")
-        if len(parts) != 4:
+    week_start, week_end = week_window_local()
+
+    for s in chain:
+        inst = s["instrument_name"]
+        kind = s["instrument_type"]
+        if kind != "option":
             continue
-        _, exp_tok, strike_tok, cp = parts
-        expiry_dt_utc = parse_expiry_date(exp_tok)
-        if not expiry_dt_utc:
+
+        strike = float(s["strike"])
+        mark_iv = float(s.get("mark_iv", 0)) / 100.0
+        if mark_iv <= 0:
             continue
-        if only_this_week:
-            exp_local = expiry_dt_utc.astimezone(TZ).date()
-            if not (mon <= exp_local <= sun):
+
+        expiry = parse_expiry_date(inst)
+        if not expiry:
+            continue
+
+        if week_only:
+            if not (week_start <= expiry <= week_end):
                 continue
-        try:
-            K = float(strike_tok)
-        except:
+
+        oi = float(s.get("open_interest", 0))
+        if oi <= 0:
             continue
-        now_utc = datetime.now(timezone.utc)
-        seconds = (expiry_dt_utc - now_utc).total_seconds()
-        if seconds <= 0:
+
+        # Deribit summary doesn't directly give time to expiry; approximate:
+        t_days = max((expiry - now).total_seconds() / 86400.0, 0)
+        if t_days <= 0:
             continue
-        T = seconds / 31_557_600.0
-        iv = row.get("mark_iv", None)
-        try:
-            iv = float(iv) / 100.0 if iv is not None else None
-        except:
-            iv = None
-        oi = row.get("open_interest", 0.0)
-        try:
-            oi = float(oi)
-        except:
-            oi = 0.0
-        gamma_pc = bs_gamma(spot, K, T, iv)
-        if gamma_pc is None:
-            continue
-        sgn = gex_sign(cp)
-        gex_value = gamma_pc * oi * (spot**2) * 0.01 * sgn
-        gex_by_strike[K] += gex_value
+        t_years = t_days / 365.0
+
+        cp = inst.split("-")[-1]  # 'C' or 'P'
+        gamma = bs_gamma(spot, strike, mark_iv, t_years, cp)
+        sign = gex_sign(cp, sign_model=sign_model)
+        # scale factor: notional GEX = gamma * S^2 * OI * multiplier
+        gex_value = gamma * (spot**2) * oi * sign * 0.01  # 0.01 is arbitrary scale
+        gex_by_strike[strike] += gex_value
+
     return dict(gex_by_strike)
 
-def smooth_gex(gex_by_strike, window=1):
-    if window <= 0:
-        return dict(gex_by_strike)
+def smooth_gex(gex_by_strike, window=2):
+    """
+    Apply a simple triangular smoothing in strike space.
+    """
+    if not gex_by_strike:
+        return {}
+
     strikes_sorted = sorted(gex_by_strike.keys())
     idx = {k:i for i,k in enumerate(strikes_sorted)}
     smoothed = {}
-    weights = [i+1 for i in range(window)] + [window+1] + [i for i in range(window,0,-1)]
+
+    weights = [1/(abs(i)+1) for i in range(-window, window+1)]
     for k in strikes_sorted:
         i = idx[k]
         total = 0.0
@@ -218,349 +255,323 @@ def smooth_gex(gex_by_strike, window=1):
 
 def build_stickies(gex_by_strike, top_n=14):
     items = sorted(gex_by_strike.items(), key=lambda kv: abs(kv[1]), reverse=True)[:top_n]
-    labeled = [Sticky(strike=k, gex=v, label=("Support (+)" if v >= 0 else "Resistance (−)")) for k, v in items]
-    return sorted(labeled, key=lambda s: s.strike)
+    labeled = [Sticky(strike=k, gex=v, label=("Support (+)" if v >= 0 else "Resistance (−)")) for
+               k,v in items]
+    return labeled
 
-def nearest_levels_all(gex_by_strike, spot):
-    above_strikes = sorted([k for k in gex_by_strike.keys() if k >= spot])
-    below_strikes = sorted([k for k in gex_by_strike.keys() if k <= spot])
-    near_above = above_strikes[0] if above_strikes else None
-    near_below = below_strikes[-1] if below_strikes else None
-    def pack(k):
-        if k is None: return None
-        v = gex_by_strike[k]
-        return {"strike": k, "gex": v, "label": ("Support (+)" if v >= 0 else "Resistance (−)")}
-    return pack(near_below), pack(near_above)
+def detect_edges(gex_by_strike):
+    """
+    Detect edges as sign changes in GEX across strikes.
+    Returns list of dicts: {edge, strength}.
+    """
+    if not gex_by_strike:
+        return []
 
-def strongest_levels(gex_by_strike, spot):
-    below = [(k, v) for k, v in gex_by_strike.items() if k < spot]
-    above = [(k, v) for k, v in gex_by_strike.items() if k > spot]
-    below_best = max(below, key=lambda kv: abs(kv[1])) if below else None
-    above_best = max(above, key=lambda kv: abs(kv[1])) if above else None
-    def pack(pair):
-        if not pair: return None
-        k, v = pair
-        return {"strike": k, "gex": v, "label": ("Support (+)" if v >= 0 else "Resistance (−)")}
-    return pack(below_best), pack(above_best)
-
-# =========================
-# Formatting helpers
-# =========================
-def fmt_num(x, decimals=None, thousands=True):
-    if x is None: return "—"
-    if decimals is None: decimals = PRECISION
-    return f"{x:,.{decimals}f}" if thousands else f"{x:.{decimals}f}"
-
-def fmt_compact_price(x):
-    return f"{x:,.0f}"
-
-def human_gex(v):
-    av = abs(v)
-    if av >= 1e9: return f"{v/1e9:.2f}B"
-    if av >= 1e6: return f"{v/1e6:.2f}M"
-    return f"{v:.0f}"
-
-def format_trade_map(stickies, spot, width=6):
-    left = [s for s in stickies if s.strike < spot][-width:]
-    right = [s for s in stickies if s.strike > spot][:width]
-    def tag(s):
-        lr = "S" if "Support" in s.label else "R"
-        return f"{fmt_compact_price(s.strike)} {lr}"
-    left_txt = " — ".join(tag(x) for x in left)
-    right_txt = " — ".join(tag(x) for x in right)
-    core = f"[spot {fmt_compact_price(spot)}]"
-    res = ""
-    if left: res += "… " + left_txt + " — "
-    res += core
-    if right: res += " — " + right_txt + " …"
-    return res
-
-def detect_edges(gex_map):
-    if not gex_map: return []
-    strikes = sorted(gex_map.keys())
+    strikes_sorted = sorted(gex_by_strike.keys())
     edges = []
-    def sgn(v): return 1 if v>0 else (-1 if v<0 else 0)
-    for i in range(len(strikes)-1):
-        k1, k2 = strikes[i], strikes[i+1]
-        v1, v2 = gex_map[k1], gex_map[k2]
-        if sgn(v1) != sgn(v2) or sgn(v1)==0 or sgn(v2)==0:
-            edge = (k1 + k2)/2.0
-            strength = abs(v2 - v1) / max(1e-9, (k2 - k1))
-            edges.append({"edge": edge, "left": k1, "right": k2, "strength": strength})
+    prev_sign = None
+    prev_strike = None
+    prev_val = None
+
+    for k in strikes_sorted:
+        v = gex_by_strike[k]
+        sign = 1 if v > 0 else -1 if v < 0 else 0
+        if prev_sign is not None and sign != prev_sign and sign != 0:
+            # approximate edge location
+            edge = (prev_strike + k) / 2.0
+            strength = abs(prev_val) + abs(v)
+            edges.append({"edge": edge, "strength": strength})
+        prev_sign = sign
+        prev_strike = k
+        prev_val = v
+
     return edges
 
-def net_gex(gex_map):
-    return sum(gex_map.values())
+def net_gex(gex_by_strike):
+    return sum(gex_by_strike.values())
 
-def build_bias_line(spot, net_smoothed, flip_zone, pos_min):
-    magnet = pos_min if pos_min is not None else flip_zone
-    if net_smoothed < 0:
-        if flip_zone and spot < flip_zone:
-            return f"Neutral→Down — short-gamma <~{fmt_compact_price(flip_zone)}; magnet ~{fmt_compact_price(magnet)} (fade above)."
-        else:
-            return f"Downside-skewed — rallies stall near ~{fmt_compact_price(magnet)}."
-    elif net_smoothed > 0:
-        if flip_zone and spot < flip_zone:
-            return f"Stabilizing — approach ~{fmt_compact_price(flip_zone)} compresses vol; above it, mean-revert."
-        else:
-            return f"Mean-reverting — fade extremes toward ~{fmt_compact_price(magnet)}."
-    else:
-        return f"Mixed — near neutral gamma; watch ~{fmt_compact_price(flip_zone or magnet or spot)}."
-
-def summarize_change(cur, prev):
-    if prev is None: return []
-    out = []
-    def pct(a,b):
-        if a is None or b is None: return None
-        if b==0: return None
-        return 100.0*(a-b)/abs(b)
-    def add_if_sig(label, a, b):
-        p = pct(a,b)
-        if p is not None and abs(p) >= MIN_DELTA_PCT:
-            arrow = "↑" if a>b else "↓"
-            out.append(f"{label}: {arrow} {a-b:+.2f} ({p:+.2f}%)")
-    add_if_sig("Spot", cur.get("spot"), prev.get("spot"))
-    add_if_sig("Net GEX", cur.get("net_gex_smoothed"), prev.get("net_gex_smoothed"))
-    if cur.get("flip_zone") and prev.get("flip_zone"):
-        dz = cur["flip_zone"] - prev["flip_zone"]
-        if abs(100*dz/cur["spot"]) >= MIN_DELTA_PCT:
-            arrow = "↑" if dz>0 else "↓"
-            out.append(f"Flip: {arrow} {dz:+.0f}")
-    return out
-
-# =========================
-# Payload & formatting
-# =========================
-def compute_pos_min(gex_map):
+def compute_pos_min(smoothed):
     """
-    Approximate magnet: strike where cumulative GEX is closest to 0.
+    Compute approximate 'magnet' (pos_min) as strike where cumulative GEX crosses 0.
     """
-    if not gex_map:
+    if not smoothed:
         return None
-    strikes = sorted(gex_map.keys())
+    strikes_sorted = sorted(smoothed.keys())
     cum = 0.0
-    best_abs = None
-    best_strike = None
-    for k in strikes:
-        cum += gex_map[k]
-        if best_abs is None or abs(cum) < best_abs:
-            best_abs = abs(cum)
-            best_strike = k
-    return best_strike
+    min_abs = float("inf")
+    pos_min_strike = None
+    for k in strikes_sorted:
+        cum += smoothed[k]
+        if abs(cum) < min_abs:
+            min_abs = abs(cum)
+            pos_min_strike = k
+    return pos_min_strike
 
-def build_payload(spot, source_map, raw_map, stickies, nb_full, na_full, sb, sa):
+# =========================
+# Formatting Helpers
+# =========================
+
+def human_gex(val):
+    if val is None:
+        return "—"
+    av = abs(val)
+    if av >= 1e8:
+        return f"{val/1e8:.2f}e8"
+    if av >= 1e7:
+        return f"{val/1e7:.2f}e7"
+    if av >= 1e6:
+        return f"{val/1e6:.2f}e6"
+    if av >= 1e5:
+        return f"{val/1e5:.2f}e5"
+    return f"{val:.0f}"
+
+def fmt_compact_price(x):
+    if x is None:
+        return "—"
+    if x >= 100000:
+        return f"{x:,.0f}"
+    return f"{x:,.0f}"
+
+def fmt_ts(dt):
+    if not dt:
+        return "—"
+    return dt.strftime("%Y-%m-%d %H:%M")
+
+def build_nearest_levels_all(spot, gex_by_strike):
     """
-    Construct the payload dict used by Ultra/Pretty/alerts/state.
+    Return nearest below and above strike with label R/S.
     """
-    now_local = datetime.now(TZ).isoformat()
-    meta = {
-        "currency": CURRENCY,
-        "index": INDEX_NAME,
-        "tz": TZ_NAME,
-        "week_only": WEEK_ONLY,
-        "smoothed_window": SMOOTH_WINDOW,
-    }
+    if not gex_by_strike:
+        return None, None
 
-    net_raw = net_gex(raw_map)
-    net_smoothed = net_gex(source_map)
+    strikes_sorted = sorted(gex_by_strike.keys())
+    below = [k for k in strikes_sorted if k <= spot]
+    above = [k for k in strikes_sorted if k >= spot]
 
-    if net_smoothed > 0:
-        sign = "Pos"
-    elif net_smoothed < 0:
-        sign = "Neg"
-    else:
-        sign = "Neutral"
+    nb = below[-1] if below else None
+    na = above[0] if above else None
 
-    edges = detect_edges(source_map)
+    def mk(k):
+        if k is None:
+            return None
+        v = gex_by_strike[k]
+        return {
+            "strike": k,
+            "gex": v,
+            "label": "Support (+)" if v >= 0 else "Resistance (−)",
+        }
+
+    return mk(nb), mk(na)
+
+def strongest_levels(gex_by_strike):
+    """
+    Return strongest below/above by |GEX|.
+    """
+    if not gex_by_strike:
+        return None, None
+
+    items = list(gex_by_strike.items())
+    below = [kv for kv in items]
+    above = [kv for kv in items]
+
+    # strongest by abs value
+    sb = max(below, key=lambda kv: abs(kv[1]))
+    sa = max(above, key=lambda kv: abs(kv[1]))
+
+    def mk(tup):
+        k,v = tup
+        return {
+            "strike": k,
+            "gex": v,
+            "label": "Support (+)" if v >= 0 else "Resistance (−)",
+        }
+
+    return mk(sb), mk(sa)
+
+def build_trade_map(gex_by_strike):
+    """
+    Construct a crude 'trade map' string from top GEX strikes.
+    """
+    if not gex_by_strike:
+        return "—"
+
+    items = sorted(gex_by_strike.items(), key=lambda kv: abs(kv[1]), reverse=True)[:TOP_N]
+    parts = []
+    for k,v in items:
+        lab = "S" if v>=0 else "R"
+        parts.append(f"{int(k)}{lab}")
+    return " / ".join(parts)
+
+def build_bias_line(net_gex_value, flip_zone, pos_min):
+    """
+    Build a human-readable bias line:
+    - sign of net GEX
+    - relationship of spot/flip/pos_min is handled elsewhere
+    """
+    if net_gex_value is None:
+        return "Bias: unable to compute net GEX."
+
+    sign = "Negative" if net_gex_value < 0 else "Positive" if net_gex_value > 0 else "Near zero"
+    line = f"Net GEX is {sign} ({human_gex(net_gex_value)}). "
+    if flip_zone:
+        line += f"Gamma flip around ~{fmt_compact_price(flip_zone)}. "
+    if pos_min:
+        line += f"Magnet (pos_min) near ~{fmt_compact_price(pos_min)}."
+    return line
+
+# =========================
+# Payload Build
+# =========================
+
+def build_payload_once():
+    """
+    Single-run build: fetch spot, chain, compute GEX, edges, etc.
+    Returns a payload dict.
+    """
+    now = kuching_now()
+    ts_str = now.isoformat()
+    spot = get_spot()
+    chain = fetch_chain()
+    week_only = WEEK_ONLY
+
+    # try week-only first
+    gex_raw = aggregate_gex(chain, spot, now=now, week_only=week_only)
+    if not gex_raw and week_only:
+        # fallback to full chain
+        gex_raw = aggregate_gex(chain, spot, now=now, week_only=False)
+        week_only = False
+
+    if not gex_raw:
+        return build_neutral_payload(now, spot, week_only=week_only)
+
+    # smoothing
+    gex_smoothed = smooth_gex(gex_raw, window=SMOOTH_WINDOW) if SMOOTH_ENABLED else gex_raw
+
+    edges = detect_edges(gex_smoothed)
+    net = net_gex(gex_smoothed)
+    pos_min = compute_pos_min(gex_smoothed)
+
+    # approximate flip zone = edge near where sign changes strongest
     flip_zone = None
     if edges:
-        # Flip = edge closest to spot
-        flip_zone = min(edges, key=lambda e: abs(e["edge"] - spot))["edge"]
+        # pick strongest edge by strength
+        e = max(edges, key=lambda x: x["strength"])
+        flip_zone = e["edge"]
 
-    pos_min = compute_pos_min(source_map)
-    bias_line = build_bias_line(spot, net_smoothed, flip_zone, pos_min)
-    trade_map = format_trade_map(stickies, spot)
+    nearest_below, nearest_above = build_nearest_levels_all(spot, gex_smoothed)
+    strongest_below, strongest_above = None, None
+    if gex_smoothed:
+        sb, sa = strongest_levels(gex_smoothed)
+        strongest_below, strongest_above = sb, sa
+
+    trade_map = build_trade_map(gex_smoothed)
+    bias_line = build_bias_line(net, flip_zone, pos_min)
+
+    # gamma sign overview
+    net_sign = "Neg" if net < 0 else "Pos" if net > 0 else "Neu"
 
     payload = {
-        "timestamp_local": now_local,
-        "meta": meta,
+        "timestamp_local": ts_str,
+        "meta": {
+            "tz": TZ_NAME,
+            "currency": CURRENCY,
+            "index": INDEX_NAME,
+            "week_only": week_only,
+        },
         "spot": spot,
-        "nearest_below": nb_full,
-        "nearest_above": na_full,
-        "strongest_below": sb,
-        "strongest_above": sa,
-        "stickies_topN": [
-            {"strike": s.strike, "gex": s.gex, "label": s.label}
-            for s in stickies
-        ],
-        "trade_map": trade_map,
+        "gex_raw": gex_raw,
+        "gex_smoothed": gex_smoothed,
+        "edges": edges,
+        "net_gex_raw": net_gex(gex_raw),
+        "net_gex_smoothed": net,
+        "net_gex_sign": net_sign,
         "flip_zone": flip_zone,
         "pos_min": pos_min,
-        "net_gex_raw": net_raw,
-        "net_gex_smoothed": net_smoothed,
-        "net_gex_sign": sign,
+        "nearest_below": nearest_below,
+        "nearest_above": nearest_above,
+        "strongest_below": strongest_below,
+        "strongest_above": strongest_above,
+        "trade_map": trade_map,
         "bias_line": bias_line,
-        "edges": edges,
     }
     return payload
 
-def build_neutral_payload(spot: float):
-    """
-    Build a minimal but safe 'neutral' payload when we can't get any GEX map.
-    This keeps Ultra/Pretty happy without faking levels.
-    """
-    now = datetime.now(TZ).isoformat()
-    meta = {
-        "currency": CURRENCY,
-        "index": INDEX_NAME,
-        "tz": TZ_NAME,
-        "week_only": WEEK_ONLY,
-        "smoothed_window": SMOOTH_WINDOW,
-    }
-
+def build_neutral_payload(now, spot, week_only=True):
+    ts_str = now.isoformat()
     return {
-        "timestamp_local": now,
-        "meta": meta,
+        "timestamp_local": ts_str,
+        "meta": {
+            "tz": TZ_NAME,
+            "currency": CURRENCY,
+            "index": INDEX_NAME,
+            "week_only": week_only,
+        },
         "spot": spot,
+        "gex_raw": {},
+        "gex_smoothed": {},
+        "edges": [],
+        "net_gex_raw": 0.0,
+        "net_gex_smoothed": 0.0,
+        "net_gex_sign": "Neu",
+        "flip_zone": None,
+        "pos_min": None,
         "nearest_below": None,
         "nearest_above": None,
         "strongest_below": None,
         "strongest_above": None,
-        "stickies_topN": [],
-        "trade_map": "(no GEX map — neutral fallback)",
-        "flip_zone": None,
-        "pos_min": None,
-        "net_gex_raw": 0.0,
-        "net_gex_smoothed": 0.0,
-        "net_gex_sign": "Neutral",
-        "bias_line": "Bias: Gamma map unavailable — treating as neutral.",
-        "edges": [],
+        "trade_map": "—",
+        "bias_line": "Neutral: insufficient data for GEX.",
     }
 
-def build_payload_once():
-    """
-    Single snapshot:
-    - Spot
-    - Week-only GEX map (fallback to full-chain if empty)
-    - Smoothed map
-    - Stickies, edges, flip, etc.
-    """
-    spot = get_spot()
-    chain = fetch_chain()
-
-    # 1) First attempt: week-only map (existing behaviour)
-    gex_by_strike = aggregate_gex(chain, spot, only_this_week=WEEK_ONLY)
-
-    # If week-only filter nukes everything (e.g. on weekends),
-    # fall back to full chain (all expiries)
-    if not gex_by_strike:
-        print("[warn] aggregate_gex returned empty map with WEEK_ONLY=1; falling back to full chain.", flush=True)
-        gex_by_strike = aggregate_gex(chain, spot, only_this_week=False)
-
-    # If still nothing, return a clean neutral payload instead of a fake 0 map
-    if not gex_by_strike:
-        print("[warn] aggregate_gex returned empty map even for full chain; using neutral fallback payload.", flush=True)
-        return build_neutral_payload(spot)
-
-    # 2) Smoothing as before
-    gex_smoothed  = smooth_gex(gex_by_strike, window=SMOOTH_WINDOW)
-    # If smoothing wiped everything, fall back to raw
-    source = gex_smoothed if (SMOOTH_WINDOW > 0 and gex_smoothed) else gex_by_strike
-
-    stickies = build_stickies(source, TOP_N)
-    nb_full, na_full = nearest_levels_all(gex_by_strike, spot)
-    sb, sa = strongest_levels(source, spot)
-
-    payload = build_payload(spot, source, gex_by_strike, stickies, nb_full, na_full, sb, sa)
-    return payload
-
 # =========================
-# I/O, Telegram, and HTML helpers
+# State Persistence
 # =========================
-def html_escape(s: str) -> str:
-    # Minimal safe escape for Telegram HTML mode
-    return (str(s)
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;"))
 
-def load_prev_state(path: str):
+def load_prev_state(path=STATEFILE):
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path,"r") as f:
             return json.load(f)
     except Exception:
-        return {}
+        return None
 
-def save_state(path: str, payload: dict):
+def save_state(path, payload):
     try:
-        d = os.path.dirname(path)
-        if d and not os.path.exists(d):
-            os.makedirs(d, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
+        with open(path,"w") as f:
+            json.dump(payload,f)
     except Exception as e:
         print(f"[warn] failed to save state: {e}", flush=True)
 
-def telegram_send(text: str, parse_mode=None, chat_id=None):
-    token = BOT_TOKEN
-    chat  = chat_id or CHAT_ID
-    if not token or not chat:
-        return False, "missing token/chat_id"
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    data = {"chat_id": chat, "text": text}
-    if parse_mode:
-        data["parse_mode"] = parse_mode
-        data["disable_web_page_preview"] = True
+# =========================
+# Telegram
+# =========================
+
+def send_telegram_message(text, chat_id=None):
+    if not BOT_TOKEN:
+        print(text, flush=True)
+        return
+    if chat_id is None:
+        chat_id = CHAT_ID
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    data = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML" if text.strip().startswith("<") else "Markdown",
+        "disable_web_page_preview": True,
+    }
     try:
-        r = requests.post(url, json=data, timeout=15)
-        ok = (r.status_code == 200) and r.json().get("ok")
-        return (True, r.text) if ok else (False, r.text)
+        r = requests.post(url, json=data, timeout=10)
+        if not r.ok:
+            print(f"[warn] Telegram send failed: {r.status_code} {r.text}", flush=True)
     except Exception as e:
-        return False, str(e)
+        print(f"[warn] Telegram exception: {e}", flush=True)
 
 # =========================
-# Telegram /help command
+# Ultra / Pretty Formatting
 # =========================
-HELP_TEXT = """📘 <b>GEX Bot Guide</b>
-
-<b>🔴 Short Gamma (Neg Γ)</b>  
-Dealers hedge <i>with</i> price → volatility expands.  
-• Fade only at strong walls  
-• Breakouts can run far  
-• Tight stops, fast profit-taking  
-
-<b>🟢 Long Gamma (Pos Γ)</b>  
-Dealers hedge <i>against</i> price → volatility compresses.  
-• Mean-reversion near magnet  
-• Expect choppy range trades  
-
-<b>⚪ Neutral / Mixed</b>  
-Transition zone → choppy & unpredictable.  
-
-<b>Key terms</b>:  
-• <b>Flip</b>: regime boundary  
-• <b>Mag</b>: price magnet (center of gravity)  
-• <b>Δ</b>: distance to flip (% urgency)  
-• <b>R/S</b>: Resistance/Support walls  
-
-Use the Ultra feed for 5-min flow cues.  
-Use Pretty feed (hourly) for deep context.
-"""
-
-def telegram_process_command(msg_text: str, chat_id=None):
-    """
-    Process Telegram commands like /help or /status.
-    """
-    text = msg_text.strip().lower()
-    if text.startswith("/help"):
-        telegram_send(HELP_TEXT, parse_mode="HTML", chat_id=chat_id)
-        return True
-    return False
 
 def to_ultra(payload, prev=None):
     """
-    Ultra (5-min): concise regime + flip distance + walls.
-    Adds a 3rd line when spot is within proximity of a strong edge.
+    Ultra (5-min): concise regime + flip distance + walls + hedge/bias line.
     """
     p    = payload
     spot = p["spot"]
@@ -571,16 +582,17 @@ def to_ultra(payload, prev=None):
     regime_emoji = "🔴" if net < 0 else ("🟢" if net > 0 else "⚪")
     regime_word  = "Short" if net < 0 else ("Long" if net > 0 else "Flat")
 
-    # edge/flip distance cue
+    # --- Edge / flip distance cue (Δ) ---
     edges = p.get("edges", [])
-    dist_txt = "Δ —"
-    if edges:
-        e = sorted(edges, key=lambda x: abs(x["edge"] - spot))[0]
-        dist = e["edge"] - spot
-        dist_txt = f"Δ {dist:+.0f} ({(100*dist/spot):+.2f}%)"
-    elif flip:
-        dist = flip - spot
-        dist_txt = f"Δ {dist:+.0f} ({(100*dist/spot):+.2f}%)"
+    ne = nearest_edge_info(spot, edges) if edges else None
+
+    ref_level = flip or (ne["edge"] if ne else None)
+    if ref_level:
+        dist_pts = ref_level - spot
+        dist_pct = abs(dist_pts) / spot * 100.0
+        dist_txt = f"Δ {dist_pts:+.0f} ({dist_pct:+.2f}%)"
+    else:
+        dist_txt = "Δ —"
 
     # magnet hint (pos_min if available; else flip)
     pos_min = p.get("pos_min")
@@ -589,21 +601,81 @@ def to_ultra(payload, prev=None):
     # nearest/strongest walls
     nb, na = p.get("nearest_below"), p.get("nearest_above")
     sb, sa = p.get("strongest_below"), p.get("strongest_above")
-    def lab(x):
-        if not x: return "—"
-        return f"{int(x['strike'])}{'S' if x['gex']>=0 else 'R'}"
 
+    def lab(x):
+        if not x:
+            return "—"
+        return f"{int(x['strike'])}{'S' if x['gex'] >= 0 else 'R'}"
+
+    # Line 1: map + Δ + Γ
     line1 = (
         f"BTC {fmt_compact_price(spot)} | "
         f"{regime_emoji} γ {regime_word} <~{fmt_compact_price(flip) if flip else '—'} | "
         f"🎯 Mag {fmt_compact_price(magnet) if magnet else '—'} | "
-        f"{dist_txt} | Γ {human_gex(net)} {'Neg' if net<0 else 'Pos' if net>0 else 'Neu'}"
+        f"{dist_txt} | Γ {human_gex(net)} "
+        f"{'Neg' if net < 0 else 'Pos' if net > 0 else 'Neu'}"
     )
+
+    # Line 2: walls
     line2 = f"📊 Near {lab(nb)}/{lab(na)} | Strong {lab(sb)}/{lab(sa)}"
 
-    message = line1 + "\n" + line2
+    # --- New Line 3: hedge behaviour & trade bias ---
+    abs_net = abs(net)
 
-    # --- Volatility risk detection (stay inside the function) ---
+    # Hedge behaviour from gamma sign
+    if net < -1e6:
+        hedge_core = "dealers chase moves (short γ"
+    elif net > 1e6:
+        hedge_core = "dealers fade moves (long γ"
+    else:
+        hedge_core = "γ near neutral"
+
+    # Intensity from |netΓ|
+    if abs_net >= 25e6:
+        intensity = "high"
+    elif abs_net >= 5e6:
+        intensity = "medium"
+    elif abs_net > 0:
+        intensity = "low"
+    else:
+        intensity = ""
+
+    if abs_net > 1e6:
+        if intensity:
+            hedge_text = f"{hedge_core}, {intensity} intensity)"
+        else:
+            hedge_text = f"{hedge_core})"
+    else:
+        hedge_text = hedge_core
+
+    # Trade bias heuristic using γ regime + flip/magnet location
+    if abs_net < 1e6 or not flip:
+        bias_phrase = "bias: stand aside / trade local chop"
+    else:
+        if net < 0:  # short gamma regime
+            if flip and spot > flip:
+                bias_phrase = "bias: short-the-rip (respect resistance above)"
+            elif flip and spot < flip:
+                bias_phrase = "bias: cautious — room to squeeze toward flip"
+            else:
+                bias_phrase = "bias: short-the-rip in short-gamma regime"
+        else:  # long gamma regime
+            if magnet:
+                dist_pct_mag = abs(spot - magnet) / spot * 100.0
+                if dist_pct_mag < 2.0:
+                    bias_phrase = "bias: buy-the-dip around magnet"
+                elif spot < magnet:
+                    bias_phrase = "bias: buy-the-dip toward magnet"
+                else:
+                    bias_phrase = "bias: fade moves away from magnet"
+            else:
+                bias_phrase = "bias: buy-the-dip (long-gamma regime)"
+
+    hedge_line = f"🧮 Hedge: {hedge_text} — {bias_phrase}"
+
+    message = line1 + "\n" + line2 + "\n" + hedge_line
+
+    # --- Volatility risk detection (existing behaviour) ---
     vol_alert = ""
     if prev and prev.get("net_gex_smoothed", 0) > 0:
         prev_net = prev.get("net_gex_smoothed", 0.0)
@@ -611,9 +683,10 @@ def to_ultra(payload, prev=None):
         prev_flip = prev.get("flip_zone")
         if (drop_pct < -0.5) or (flip and prev_flip and (flip - prev_flip) > 500 and spot < flip):
             vol_alert = "⚠️ Gamma compression weakening — upside volatility risk increasing"
+
     if (net < 0) and flip and (flip < spot):
         vol_alert = "⚠️ Gamma support lost — downside volatility risk increasing"
-    elif abs(net) < 1e6:
+    elif abs_net < 1e6:
         vol_alert = "⚖️ Gamma neutral zone — expect chop / transition"
 
     if vol_alert:
@@ -640,63 +713,65 @@ def to_html(payload, prev=None):
             f"Δ={dist:+.0f} ({(100*dist/spot):+.2f}%) | strength {int(e['strength'])}"
         )
 
-    nb = p["nearest_below"]; na = p["nearest_above"]; sb = p["strongest_below"]; sa = p["strongest_above"]
-    def lvl(x, arrow):
-        if not x: return f"{arrow}—"
-        signc = "−" if x["gex"] < 0 else "+"
-        return f"{arrow}{fmt_compact_price(x['strike'])}{signc}"
-    near_line   = f"<b>🧭 Near:</b> {lvl(nb,'↓')} {lvl(na,'↑')}"
-    strong_line = f"<b>💪 Strong:</b> {lvl(sb,'↓')} {lvl(sa,'↑')}"
+    nb = p["nearest_below"]
+    na = p["nearest_above"]
+    def lab_html(x):
+        if not x: return "—"
+        return f"{int(x['strike'])}{'S' if x['gex']>=0 else 'R'}"
 
-    top = p["stickies_topN"][:TOP_N_COMPACT]
-    top_line = ", ".join([f"{int(x['strike'])}{'R' if x['gex']<0 else 'S'}" for x in top])
+    s_nb, s_na = lab_html(nb), lab_html(na)
 
-    bias_text = p['bias_line']
-    if bias_text.startswith("Bias: "):
-        bias_text = bias_text[6:]
+    sb = p["strongest_below"]
+    sa = p["strongest_above"]
+    s_sb, s_sa = lab_html(sb), lab_html(sa)
 
-    lines = [
-        f"<b>📊 BTC GEX Update</b> | <b>Spot</b> {fmt_compact_price(spot)}",
-        f"🕒 {html_escape(ts)} ({html_escape(tz)})",
-        "",
-        f"<b>🎯 Bias:</b> {html_escape(bias_text)}",
-        f"<b>Γ Net:</b> {human_gex(net)} (<i>{sign}</i>) | <b>Flip:</b> ~{fmt_compact_price(flip) if flip else '—'}",
-    ]
-    if edge_line:
-        lines.append(edge_line)
-    lines.append(f"{near_line} | {strong_line}")
-    lines.append(f"<b>🗺 Map:</b> {html_escape(p['trade_map'])}")
-    lines.append(f"<b>Top |Γ|:</b> {html_escape(top_line)}")
+    bias_line = p.get("bias_line","")
 
+    # Delta vs previous
+    delta_line = ""
     if prev:
-        changes = summarize_change(p, prev)
-        if changes:
-            lines.append("<b>Δ</b> " + html_escape(" | ".join(changes)))
+        prev_flip = prev.get("flip_zone")
+        prev_net  = prev.get("net_gex_smoothed", 0.0)
+        if prev_flip and flip:
+            diff = flip - prev_flip
+            if abs(diff) >= 500:
+                arrow = "↑" if diff>0 else "↓"
+                delta_line += f"<b>Flip shift:</b> {arrow}{diff:+.0f} → ~{fmt_compact_price(flip)}.<br>"
+        if prev_net:
+            change_pct = (net - prev_net)/prev_net
+            if abs(change_pct) >= 0.25:
+                arrow = "↑" if change_pct>0 else "↓"
+                delta_line += f"<b>Net GEX:</b> {arrow}{change_pct*100:+.1f}% (now {human_gex(net)}).<br>"
 
-    if PRINT_EDGES_IN_PRETTY:
-        edges = p.get("edges", [])
-        if edges:
-            show = sorted(edges, key=lambda x: -x.get("strength", 0))[:3]
-            edge_lines = " | ".join(
-                [f"~{fmt_compact_price(e['edge'])} (str {int(e.get('strength',0))})"
-                 for e in show]
-            )
-            lines.append(f"<b>Cluster edges:</b> {html_escape(edge_lines)}")
+    header = f"<b>{CURRENCY} GEX Update</b> | Spot <b>{fmt_compact_price(spot)}</b><br>"
+    meta_line = f"<i>{ts} ({tz})</i><br>"
 
-    return "\n".join(lines)
+    core = (
+        f"<b>Γ regime:</b> {sign} (net {human_gex(net)})<br>"
+        f"<b>Flip zone:</b> ~{fmt_compact_price(flip) if flip else '—'}<br>"
+        f"<b>Magnet (pos_min):</b> ~{fmt_compact_price(p.get('pos_min')) if p.get('pos_min') else '—'}<br>"
+        f"<b>Near levels:</b> {s_nb}/{s_na}<br>"
+        f"<b>Strongest levels:</b> {s_sb}/{s_sa}<br>"
+        f"<b>Map:</b> {p.get('trade_map','—')}<br>"
+    )
+
+    edges_block = edge_line + "<br>" if edge_line else ""
+    bias_block  = f"<b>Bias:</b> {bias_line}<br>" if bias_line else ""
+
+    html = header + meta_line + core + edges_block + delta_line + bias_block
+    return html
 
 # =========================
-# Alerts & helpers
+# Alerts
 # =========================
-def strongest_label(x):
-    if not x: return "—"
-    return f"{int(x['strike'])}{'S' if x['gex']>=0 else 'R'}"
 
-def should_edge_alert(payload, prev):
-    if not ALERTS or not prev: return False, ""
+def edge_proximity_alert(payload):
+    if not ALERTS:
+        return False, ""
     spot = payload["spot"]
     edges = payload.get("edges", [])
-    if not edges: return False, ""
+    if not edges:
+        return False, ""
     e = sorted(edges, key=lambda x: abs(x["edge"]-spot))[0]
     dist = abs(e["edge"] - spot)
     pct  = 100*dist/spot
@@ -704,7 +779,7 @@ def should_edge_alert(payload, prev):
     pass_pct = (ALERT_EDGE_PCT>0 and pct <= ALERT_EDGE_PCT)
     if pass_pct or pass_usd:
         arrow = "↑" if (e["edge"]-spot)>0 else "↓"
-        return True, f"⚠️ Edge proximity: spot {fmt_compact_price(spot)} vs edge ~{fmt_compact_price(e['edge'])} ({arrow}{abs(e['edge']-spot):.0f}, {pct:.2f}%)"
+        return True, f"⚠️ Edge proximity: spot {fmt_compact_price(spot)} near {fmt_compact_price(e['edge'])} ({arrow}{abs(e['edge']-spot):.0f}, {pct:.2f}%)"
     return False, ""
 
 def should_flip_shift_alert(payload, prev):
@@ -715,147 +790,130 @@ def should_flip_shift_alert(payload, prev):
         return True, f"🔄 Flip moved {arrow} {f_now-f_prev:+.0f} → ~{fmt_compact_price(f_now)}"
     return False, ""
 
-def should_sign_flip_alert(payload, prev):
-    if not ALERTS or not prev: return False, ""
-    s_now = payload["net_gex_sign"]; s_prev = prev.get("net_gex_sign")
+def should_net_sign_flip_alert(payload, prev):
+    if not ALERTS or not ALERT_NET_SIGN or not prev: return False, ""
+    s_now = payload.get("net_gex_sign")
+    s_prev = prev.get("net_gex_sign")
     if s_now != s_prev:
-        return True, f"🧭 NetΓ sign flip: {s_prev} → {s_now} ({human_gex(payload['net_gex_smoothed'])})"
+        return True, f"🧭 NetΓ sign flip: {s_prev} → {s_now} ({human_gex(payload.get('net_gex_smoothed',0))})"
     return False, ""
 
-def should_strongest_change_alert(payload, prev):
-    if not ALERTS or not prev: return False, ""
-    a_now = strongest_label(payload.get("strongest_above"))
-    b_now = strongest_label(payload.get("strongest_below"))
-    a_prev = strongest_label(prev.get("strongest_above"))
-    b_prev = strongest_label(prev.get("strongest_below"))
-    if a_now!=a_prev or b_now!=b_prev:
-        return True, f"📌 Strongest changed: Above {a_prev}→{a_now} | Below {b_prev}→{b_now}"
+def strongest_level_change_alert(payload, prev):
+    if not ALERTS or not ALERT_LVL_CHANGE or not prev: return False, ""
+    sb, sa = payload.get("strongest_below"), payload.get("strongest_above")
+    psb, psa = prev.get("strongest_below"), prev.get("strongest_above")
+    changed = False
+    parts = []
+    if sb and psb and sb["strike"] != psb["strike"]:
+        changed = True
+        parts.append(f"Below→{int(psb['strike'])}→{int(sb['strike'])}")
+    if sa and psa and sa["strike"] != psa["strike"]:
+        changed = True
+        parts.append(f"Above→{int(psa['strike'])}→{int(sa['strike'])}")
+    if changed:
+        return True, "🏋️ Strongest level shift: " + " | ".join(parts)
     return False, ""
 
 def maybe_send_alerts(payload, prev):
-    if not ALERTS or not prev: return
-    last_ts = prev.get("_last_alert_ts")
-    now_ts = time.time()
-    if last_ts is not None and (now_ts - last_ts) < ALERT_COOLDOWN_SEC:
+    if not ALERTS:
         return
+    if not prev:
+        return
+
+    ts_now = time.time()
+    last_ts = prev.get("_last_alert_ts", 0)
+    if ts_now - last_ts < ALERT_COOLDOWN_SEC:
+        return
+
     alerts = []
-    for f in (should_sign_flip_alert, should_flip_shift_alert, should_edge_alert, should_strongest_change_alert):
-        ok, msg = f(payload, prev)
-        if ok and msg: alerts.append(msg)
+    flag, msg = edge_proximity_alert(payload)
+    if flag: alerts.append(msg)
+
+    flag, msg = should_flip_shift_alert(payload, prev)
+    if flag: alerts.append(msg)
+
+    flag, msg = should_net_sign_flip_alert(payload, prev)
+    if flag: alerts.append(msg)
+
+    flag, msg = strongest_level_change_alert(payload, prev)
+    if flag: alerts.append(msg)
+
     if alerts:
-        telegram_send("\n".join(alerts), parse_mode="HTML", chat_id=ALERT_CHAT_ID)
-        payload["_last_alert_ts"] = now_ts
+        text = "\n".join(alerts)
+        send_telegram_message(text, chat_id=(ALERTS_CHAT_ID or CHAT_ID))
+        payload["_last_alert_ts"] = ts_now
+
+# =========================
+# Heartbeat
+# =========================
 
 def maybe_heartbeat():
-    if HEARTBEAT_HOUR<=0: return
-    now = datetime.now(TZ)
-    stamp = now.strftime("%Y-%m-%d")
-    hb_key = f"_hb_{stamp}"
-    prev = load_prev_state(STATEFILE)
-    if prev and prev.get(hb_key): return
-    if now.hour == HEARTBEAT_HOUR:
-        p = prev or {}
-        p[hb_key] = True
-        save_state(STATEFILE, p)
-
-def to_text(payload, prev=None, compact=False):
-    p = payload
-    spot = p["spot"]
-    lines = []
-    lines.append(f"BTC GEX | Spot {fmt_compact_price(spot)}")
-    lines.append(p["bias_line"])
-    flip = p.get("flip_zone")
-    if flip:
-        lines.append(f"Flip ~{fmt_compact_price(flip)}")
-    edges = p.get("edges", [])
-    if edges:
-        e = sorted(edges, key=lambda x: abs(x["edge"]-spot))[0]
-        dist = e["edge"] - spot
-        lines.append(f"Edge ~{fmt_compact_price(e['edge'])} Δ{dist:+.0f} ({(100*dist/spot):+.2f}%)")
-    nb = p.get("nearest_below"); na = p.get("nearest_above")
-    if nb or na:
-        def lab(x): return f"{int(x['strike'])}{'S' if x['gex']>=0 else 'R'}" if x else "—"
-        lines.append(f"Near {lab(nb)}/{lab(na)}")
-    return "\n".join(lines)
+    # simple stdout heartbeat; could be extended to Telegram
+    ts = datetime.now().isoformat()
+    print(f"[heartbeat] {ts}", flush=True)
 
 # =========================
-# Dual-cadence loop
+# Main Loop
 # =========================
-def dual_loop(interval_sec=300, silent=False, burst_start=False):
+
+def dual_loop(interval_sec=300, pretty_interval_sec=900):
     """
-    Base loop runs every interval_sec seconds.
-    Sends:
-      - Ultra every ULTRA_INTERVAL_SEC (default: 300 seconds)
-      - Pretty every PRETTY_INTERVAL_SEC (default: 3600 seconds)
+    Dual mode: Ultra every interval_sec, Pretty every pretty_interval_sec.
     """
     prev = load_prev_state(STATEFILE)
-    last_ultra_ts = prev.get("_last_ultra_ts") if prev else None
-    last_pretty_ts = prev.get("_last_pretty_ts") if prev else None
+    last_pretty_ts = prev.get("_last_pretty_ts", 0) if prev else 0
+    last_ultra_ts  = prev.get("_last_ultra_ts", 0) if prev else 0
 
-    # --- Burst-start: push both messages right away on deploy ---
-    if burst_start:
-        try:
-            payload = build_payload_once()
+    print("[info] starting dual loop", flush=True)
 
-            # Pretty (HTML) first
-            text_pretty = to_html(payload, prev=prev)
-            ok_p, info_p = telegram_send(text_pretty, parse_mode="HTML")
-            if not ok_p and "can't parse entities" in str(info_p).lower():
-                telegram_send(to_text(payload, prev=prev, compact=True), parse_mode=None)
+    # On start, do an immediate Ultra+Pretty
+    try:
+        payload = build_payload_once()
+        ultra = to_ultra(payload, prev=prev)
+        pretty = to_html(payload, prev=prev)
 
-            # Ultra (plain text)
-            text_ultra = to_ultra(payload, prev=prev)
-            telegram_send(text_ultra, parse_mode=None)
+        print(ultra, flush=True)
+        send_telegram_message(ultra, chat_id=CHAT_ID)
 
-            # Save state & timestamps so cadence continues cleanly
-            now = time.time()
-            payload["_last_pretty_ts"] = now
-            payload["_last_ultra_ts"]  = now
-            save_state(STATEFILE, payload)
-            prev = payload
-            last_pretty_ts = now
-            last_ultra_ts  = now
+        print("[pretty] sending initial Pretty", flush=True)
+        send_telegram_message(pretty, chat_id=PRETTY_CHAT_ID)
 
-            if not silent:
-                print("[startup] Burst-start sent Ultra + Pretty", flush=True)
+        # Save state & timestamps so cadence continues cleanly
+        now = time.time()
+        payload["_last_pretty_ts"] = now
+        payload["_last_ultra_ts"]  = now
+        save_state(STATEFILE, payload)
+        prev = payload
+        last_pretty_ts = now
+        last_ultra_ts  = now
 
-        except Exception as e:
-            if not silent:
-                print(f"[startup] burst failed: {e}", flush=True)
+    except Exception as e:
+        print(f"[error] initial iteration failed: {e}", flush=True)
 
+    # Main loop
     while True:
+        start_ts = time.time()
         try:
             payload = build_payload_once()
-            now = time.time()
+            now_ts = time.time()
 
-            send_ultra = (last_ultra_ts is None) or (now - last_ultra_ts >= ULTRA_INTERVAL_SEC)
-            send_pretty = (last_pretty_ts is None) or (now - last_pretty_ts >= PRETTY_INTERVAL_SEC)
+            # Ultra cadence
+            if now_ts - last_ultra_ts >= interval_sec:
+                ultra = to_ultra(payload, prev=prev)
+                print(ultra, flush=True)
+                send_telegram_message(ultra, chat_id=CHAT_ID)
+                last_ultra_ts = now_ts
+                payload["_last_ultra_ts"] = now_ts
 
-            if not silent:
-                print(to_ultra(payload, prev=prev), flush=True)
+            # Pretty cadence
+            if now_ts - last_pretty_ts >= pretty_interval_sec:
+                pretty = to_html(payload, prev=prev)
+                print("[pretty]", pretty, flush=True)
+                send_telegram_message(pretty, chat_id=PRETTY_CHAT_ID)
+                last_pretty_ts = now_ts
+                payload["_last_pretty_ts"] = now_ts
 
-            if send_pretty and CHAT_ID and BOT_TOKEN:
-                text_pretty = to_html(payload, prev=prev)
-                ok, info = telegram_send(text_pretty, parse_mode="HTML")
-                if (not ok) and "can't parse entities" in info:
-                    telegram_send(to_text(payload, prev=prev, compact=True), parse_mode=None)
-                    if not silent:
-                        print("[telegram] pretty HTML parse failed, sent compact fallback.", flush=True)
-                elif not ok and not silent:
-                    print(f"[telegram] pretty not sent: {info}", flush=True)
-                if ok:
-                    last_pretty_ts = now
-                    payload["_last_pretty_ts"] = last_pretty_ts
-
-            if send_ultra and CHAT_ID and BOT_TOKEN:
-                text_ultra = to_ultra(payload, prev=prev)
-                ok, info = telegram_send(text_ultra, parse_mode=None)
-                if not ok and not silent:
-                    print(f"[telegram] ultra not sent: {info}", flush=True)
-                if ok:
-                    last_ultra_ts = now
-                    payload["_last_ultra_ts"] = last_ultra_ts
-
+            # Alerts
             maybe_send_alerts(payload, prev)
 
             save_state(STATEFILE, payload)
@@ -863,36 +921,28 @@ def dual_loop(interval_sec=300, silent=False, burst_start=False):
             maybe_heartbeat()
 
         except Exception as e:
-            if not silent:
-                print(f"[error] {e}", flush=True)
+            print(f"[error] loop iteration failed: {e}", flush=True)
 
-        if JITTER_SEC>0:
-            time.sleep(random.randint(0, JITTER_SEC))
-        time.sleep(interval_sec)
+        # Sleep until next interval
+        elapsed = time.time() - start_ts
+        to_sleep = max(5, interval_sec - elapsed)
+        time.sleep(to_sleep)
 
 # =========================
-# CLI
+# CLI Entrypoint
 # =========================
+
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dual", action="store_true",
-                        help="Run dual cadence: ultra every 5m, pretty every 1h")
-    parser.add_argument("--interval", type=int, default=300,
-                        help="Base loop sleep (seconds). Keep 300 for 5m cadence.")
-    parser.add_argument("--silent", action="store_true")
-    parser.add_argument("--statefile", type=str, default=None)
-    parser.add_argument("--burst-start", action="store_true",
-                        help="Send Ultra + Pretty immediately on startup, then continue cadence")
-
+    parser.add_argument("--dual", action="store_true", help="Run dual Ultra/Pretty loop")
+    parser.add_argument("--interval", type=int, default=300, help="Ultra interval seconds")
+    parser.add_argument("--pretty-interval", type=int, default=900, help="Pretty interval seconds")
     args = parser.parse_args()
 
-    # We no longer reassign STATEFILE dynamically — use env GEX_STATEFILE instead
-    # (for example: GEX_STATEFILE=/data/gex_state.json in Railway)
-
     if args.dual:
-        dual_loop(interval_sec=args.interval, silent=args.silent, burst_start=args.burst_start)
+        dual_loop(interval_sec=args.interval, pretty_interval_sec=args.pretty_interval)
     else:
         prev = load_prev_state(STATEFILE)
         payload = build_payload_once()
