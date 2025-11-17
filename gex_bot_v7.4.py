@@ -192,9 +192,9 @@ def aggregate_gex(chain, spot, now=None, week_only=True, sign_model="SIMPLE"):
 
     for s in chain:
         inst = s["instrument_name"]
-        kind = s["instrument_type"]
-        if kind != "option":
-            continue
+
+        # We already requested kind="option" from Deribit, so everything here is options.
+        # No need to check s["instrument_type"] (it may not even exist).
 
         strike = float(s["strike"])
         mark_iv = float(s.get("mark_iv", 0)) / 100.0
@@ -213,7 +213,7 @@ def aggregate_gex(chain, spot, now=None, week_only=True, sign_model="SIMPLE"):
         if oi <= 0:
             continue
 
-        # Deribit summary doesn't directly give time to expiry; approximate:
+        # Approx time to expiry
         t_days = max((expiry - now).total_seconds() / 86400.0, 0)
         if t_days <= 0:
             continue
@@ -222,11 +222,13 @@ def aggregate_gex(chain, spot, now=None, week_only=True, sign_model="SIMPLE"):
         cp = inst.split("-")[-1]  # 'C' or 'P'
         gamma = bs_gamma(spot, strike, mark_iv, t_years, cp)
         sign = gex_sign(cp, sign_model=sign_model)
+
         # scale factor: notional GEX = gamma * S^2 * OI * multiplier
         gex_value = gamma * (spot**2) * oi * sign * 0.01  # 0.01 is arbitrary scale
         gex_by_strike[strike] += gex_value
 
     return dict(gex_by_strike)
+
 
 def smooth_gex(gex_by_strike, window=2):
     """
