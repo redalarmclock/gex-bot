@@ -292,15 +292,17 @@ def send_telegram_message(text, chat_id=None):
     if chat_id is None:
         chat_id = CHAT_ID
 
-    # If message starts with <, assume it's Pretty → send as plain text
-    if text.strip().startswith("<"):
-        # Convert HTML-style breaks / tags to plain text
+    # Detect Pretty vs Ultra by prefix
+    is_pretty = text.lstrip().startswith("BTC GEX Update")
+
+    if is_pretty:
+        # Pretty → send as plain text, strip any residual HTML-ish tags
         text = text.replace("<br>", "\n")
         text = text.replace("<b>", "").replace("</b>", "")
         text = text.replace("<i>", "").replace("</i>", "")
         parse_mode = None
     else:
-        # Ultra → markdown
+        # Ultra → short, clean, safe for Markdown
         parse_mode = "Markdown"
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
