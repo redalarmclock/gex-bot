@@ -540,20 +540,21 @@ def send_telegram_message(text, chat_id=None):
         return
     if chat_id is None:
         chat_id = CHAT_ID
+
+    # If it looks like HTML, convert <br> to real newlines for Telegram
+    parse_mode = None
+    if text.strip().startswith("<"):
+        parse_mode = "HTML"
+        text = text.replace("<br>", "\n")
+
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": "HTML" if text.strip().startswith("<") else "Markdown",
         "disable_web_page_preview": True,
     }
-    try:
-        r = requests.post(url, json=data, timeout=10)
-        if not r.ok:
-            print(f"[warn] Telegram send failed: {r.status_code} {r.text}", flush=True)
-    except Exception as e:
-        print(f"[warn] Telegram exception: {e}", flush=True)
-
+    if parse_mode:
+        data["parse_mode"] = parse_mode
 # =========================
 # Ultra / Pretty formatting
 # =========================
