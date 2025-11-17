@@ -939,12 +939,21 @@ if __name__ == "__main__":
     parser.add_argument("--dual", action="store_true", help="Run dual Ultra/Pretty loop")
     parser.add_argument("--interval", type=int, default=300, help="Ultra interval seconds")
     parser.add_argument("--pretty-interval", type=int, default=900, help="Pretty interval seconds")
+    # Backwards-compat: accept but ignore this flag so old commands still work
+    parser.add_argument(
+        "--burst-start",
+        action="store_true",
+        help="(deprecated) kept for compatibility; initial burst is now default behaviour",
+    )
+
     args = parser.parse_args()
 
     if args.dual:
+        # We ignore args.burst_start because dual_loop already does an initial Ultra+Pretty
         dual_loop(interval_sec=args.interval, pretty_interval_sec=args.pretty_interval)
     else:
         prev = load_prev_state(STATEFILE)
         payload = build_payload_once()
         print(to_ultra(payload, prev=prev), flush=True)
         save_state(STATEFILE, payload)
+
