@@ -1,7 +1,5 @@
 import os
-import math
 import time
-import json
 import requests
 from collections import defaultdict
 from dataclasses import dataclass
@@ -23,7 +21,9 @@ PRETTY_INTERVAL_SEC  = int(os.getenv("PRETTY_INTERVAL_SEC", "900"))  # Pretty (d
 HEARTBEAT_SEC        = int(os.getenv("HEARTBEAT_SEC", "300"))
 
 DERIBIT_BASE         = os.getenv("DERIBIT_BASE", "https://www.deribit.com")
-MIN_ABS_GEX          = float(os.getenv("MIN_ABS_GEX", "5e5"))
+
+# Lower default so we don't filter everything out
+MIN_ABS_GEX          = float(os.getenv("MIN_ABS_GEX", "1e4"))
 SMOOTH_ALPHA         = float(os.getenv("SMOOTH_ALPHA", "0.3"))  # for net GEX smoothing
 
 # Telegram (support old env names too)
@@ -47,10 +47,8 @@ PRETTY_CHAT_ID = (
     or CHAT_ID
 )
 
-# Debug line for env sanity
 print(f"[debug] BOT_TOKEN loaded? {'YES' if BOT_TOKEN else 'NO'} | CHAT_ID={CHAT_ID}", flush=True)
 
-# URLs
 DERIBIT_INDEX_URL       = f"{DERIBIT_BASE}/api/v2/public/get_index_price"
 DERIBIT_SUMMARY_URL     = f"{DERIBIT_BASE}/api/v2/public/get_book_summary_by_instrument"
 DERIBIT_INSTRUMENTS_URL = f"{DERIBIT_BASE}/api/v2/public/get_instruments"
@@ -83,21 +81,21 @@ def get_deribit_index():
     )
     return data["result"]["index_price"]
 
-def get_instruments(currency: str):
+def get_instruments(currency):
     data = http_get(
         DERIBIT_INSTRUMENTS_URL,
         params={"currency": currency, "kind": "option", "expired": False}
     )
     return data["result"]
 
-def get_book_summary(instrument_name: str):
+def get_book_summary(instrument_name):
     data = http_get(
         DERIBIT_SUMMARY_URL,
         params={"instrument_name": instrument_name}
     )
     return data["result"][0]
 
-def approximate_gex_from_summary(summary: dict) -> float:
+def approximate_gex_from_summary(summary):
     """
     Approximate GEX from Deribit summary:
     Use open_interest * gamma as a simple proxy.
@@ -106,7 +104,7 @@ def approximate_gex_from_summary(summary: dict) -> float:
     gamma = summary.get("gamma", 0.0) or 0.0
     return oi * gamma
 
-def build_option_points(currency: str) -> list:
+def build_option_points(currency):
     """
     Fetch instruments and approximate GEX for each option.
     """
@@ -123,7 +121,6 @@ def build_option_points(currency: str) -> list:
             summary = get_book_summary(name)
             gex = approximate_gex_from_summary(summary)
         except Exception:
-            # network / API hiccup for this instrument; skip it
             continue
         if abs(gex) < MIN_ABS_GEX:
             continue
@@ -136,7 +133,7 @@ def build_option_points(currency: str) -> list:
         ))
     return points
 
-def cluster_by_strike(points: list) -> dict:
+def cluster_by_strike(points):
     """
     Aggregate GEX by strike.
     """
@@ -145,7 +142,7 @@ def cluster_by_strike(points: list) -> dict:
         buckets[p.strike] += p.gex
     return buckets
 
-def find_edges_from_strike_gex(strike_gex: dict) -> list:
+def find_edges_from_strike_gex(strike_gex):
     """
     Sort strikes and find "edges" where sign changes or large changes in magnitude.
     Returns list of dicts: {edge, gex_left, gex_right, diff, sign_flip}
@@ -166,18 +163,17 @@ def find_edges_from_strike_gex(strike_gex: dict) -> list:
         })
     return edges
 
-def find_flip_zone(edges: list) -> float | None:
+def find_flip_zone(edges):
     """
     Return the most relevant sign-flip edge (if any).
     """
     sign_flips = [e for e in edges if e["sign_flip"]]
     if not sign_flips:
         return None
-    # pick the edge with largest diff as the primary flip
     sf = max(sign_flips, key=lambda e: e["diff"])
     return sf["edge"]
 
-def find_pos_min_zone(strike_gex: dict) -> float | None:
+def find_pos_min_zone(strike_gex):
     """
     Positive-min region: where GEX is most positive (useful as "magnet").
     """
@@ -187,7 +183,7 @@ def find_pos_min_zone(strike_gex: dict) -> float | None:
     s, _ = max(positives, key=lambda kv: kv[1])
     return s
 
-def nearest_strike_walls(spot: float, strike_gex: dict, top_n: int = 10):
+def nearest_strike_walls(spot, strike_gex, top_n=10):
     """
     Compute nearest and strongest walls above/below.
     Returns:
@@ -212,7 +208,7 @@ def nearest_strike_walls(spot: float, strike_gex: dict, top_n: int = 10):
 
     return nearest_below, nearest_above, strongest_below, strongest_above
 
-def smooth_value(prev: float | None, new: float, alpha: float) -> float:
+def smooth_value(prev, new, alpha):
     if prev is None:
         return new
     return alpha * new + (1 - alpha) * prev
@@ -254,7 +250,7 @@ def fmt_gamma_compact(val):
         return f"{sign * (av/1e3):.0f}K"
     return f"{val:.0f}"
 
-def nearest_edge_info(spot: float, edges: list):
+def nearest_edge_info(spot, edges):
     """Return info about the nearest cluster edge (or None)."""
     if not edges:
         return None
@@ -263,7 +259,7 @@ def nearest_edge_info(spot: float, edges: list):
 
 def pick_ref_level(spot, flip, edges, magnet, nb, na, sb, sa):
     """
-    Choose a sensible reference level for Δ when flip is missing.
+    Choose a sensible reference level for Δ.
     Priority:
       1) flip
       2) nearest edge
@@ -273,21 +269,17 @@ def pick_ref_level(spot, flip, edges, magnet, nb, na, sb, sa):
     """
     candidates = []
 
-    # 1) flip
     if flip:
         candidates.append(flip)
 
-    # 2) nearest edge
     if edges:
         ne = nearest_edge_info(spot, edges)
         if ne:
             candidates.append(ne["edge"])
 
-    # 3) magnet
     if magnet:
         candidates.append(magnet)
 
-    # 4) nearest & strongest walls
     for x in (nb, na, sb, sa):
         if x and x.get("strike") is not None:
             candidates.append(x["strike"])
@@ -312,10 +304,10 @@ def send_telegram_message(text, chat_id=None):
     is_pretty = text.lstrip().startswith("BTC GEX Update")
 
     if is_pretty:
-        # Pretty → send as plain text
+        # Pretty → plain text
         parse_mode = None
     else:
-        # Ultra → short, clean, safe for Markdown
+        # Ultra → safe Markdown
         parse_mode = "Markdown"
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -372,14 +364,10 @@ def to_ultra(payload, prev=None):
     else:
         dist_txt = "Δ —"
 
-    # compact Γ text
     gamma_txt = fmt_gamma_compact(net)
+    flip_txt  = f"🎯 Flip {fmt_compact_price(flip)}" if flip else None
+    mag_txt   = f"Mag {fmt_compact_price(pos_min)}" if pos_min else "Mag —"
 
-    # flip and magnet text
-    flip_txt = f"🎯 Flip {fmt_compact_price(flip)}" if flip else None
-    mag_txt  = f"Mag {fmt_compact_price(pos_min)}" if pos_min else "Mag —"
-
-    # Line 1: core regime line
     parts = [
         f"BTC {fmt_compact_price(spot)}",
         f"{regime_emoji} {regime_label}",
@@ -392,15 +380,18 @@ def to_ultra(payload, prev=None):
 
     line1 = " | ".join(parts)
 
-    # walls line
     def lab(x):
         if not x:
             return "—"
         return f"{int(x['strike'])}{'S' if x['gex'] >= 0 else 'R'}"
 
-    line2 = f"📊 Near {lab(nb)}/{lab(na)} | Strong {lab(sb)}/{lab(sa)}"
+    nb_txt = lab(nb)
+    na_txt = lab(na)
+    sb_txt = lab(sb)
+    sa_txt = lab(sa)
 
-    # --- Hedge behaviour & trade bias line ---
+    line2 = f"📊 Near {nb_txt}/{na_txt} | Strong {sb_txt}/{sa_txt}"
+
     abs_net = abs(net)
 
     if net < -1e6:
@@ -452,7 +443,6 @@ def to_ultra(payload, prev=None):
 
     message = line1 + "\n" + line2 + "\n" + hedge_line
 
-    # --- Volatility risk detection ---
     vol_alert = ""
     if prev and prev.get("net_gex_smoothed", 0) and prev.get("net_gex_smoothed", 0) > 0:
         prev_net  = prev.get("net_gex_smoothed", 0.0)
@@ -471,7 +461,7 @@ def to_ultra(payload, prev=None):
 
     return message
 
-def to_html(payload, tz: ZoneInfo = TZ) -> str:
+def to_html(payload, tz=TZ):
     """
     Pretty (15-min or on-demand): more verbose summary for a separate channel.
     Returns plain text with line breaks.
@@ -489,13 +479,11 @@ def to_html(payload, tz: ZoneInfo = TZ) -> str:
 
     walls = p.get("walls_ordered", [])
 
-    # Map line
     wall_strs = []
     for w in walls:
         label = "S" if w["gex"] >= 0 else "R"
         wall_strs.append(f"{int(w['strike'])}{label}")
 
-    # Regime descriptor
     if net < 0:
         regime = f"Neg (net {human_gex(net)})"
     elif net > 0:
@@ -503,7 +491,6 @@ def to_html(payload, tz: ZoneInfo = TZ) -> str:
     else:
         regime = "Flat (≈0)"
 
-    # Format timestamp
     dt = datetime.fromtimestamp(ts, tz=tz)
     dt_str = dt.isoformat()
 
@@ -526,7 +513,6 @@ def to_html(payload, tz: ZoneInfo = TZ) -> str:
     if wall_strs:
         lines.append("Map: " + " / ".join(wall_strs))
 
-    # Bias summary
     if net < 0:
         bias = f"Net GEX is Negative ({human_gex(net)}). Magnet (pos_min) near ~{pos_min_txt}."
     elif net > 0:
@@ -542,19 +528,26 @@ def to_html(payload, tz: ZoneInfo = TZ) -> str:
 # Main loop and state
 # =========================
 
-def build_payload(currency: str, index_name: str, prev_payload: dict | None) -> dict:
+def build_payload(currency, index_name, prev_payload):
     spot = get_deribit_index()
     points = build_option_points(currency)
     strike_gex = cluster_by_strike(points)
-    edges = find_edges_from_strike_gex(strike_gex)
 
-    flip = find_flip_zone(edges)
-    pos_min = find_pos_min_zone(strike_gex)
+    # Fallback: if Deribit hiccups and we get nothing, reuse previous structure
+    if not strike_gex and prev_payload and prev_payload.get("strike_gex"):
+        print("[warn] empty GEX from Deribit, reusing previous structure", flush=True)
+        strike_gex = prev_payload["strike_gex"]
+    elif not strike_gex:
+        print("[warn] empty GEX and no previous structure; flat regime", flush=True)
 
-    nb, na, sb, sa = nearest_strike_walls(spot, strike_gex, TOP_N)
+    edges = find_edges_from_strike_gex(strike_gex) if strike_gex else []
 
-    # raw net GEX
-    net_raw = sum(strike_gex.values())
+    flip = find_flip_zone(edges) if edges else (prev_payload.get("flip_zone") if prev_payload else None)
+    pos_min = find_pos_min_zone(strike_gex) if strike_gex else (prev_payload.get("pos_min") if prev_payload else None)
+
+    nb, na, sb, sa = nearest_strike_walls(spot, strike_gex, TOP_N) if strike_gex else (None, None, None, None)
+
+    net_raw = sum(strike_gex.values()) if strike_gex else 0.0
     prev_net_smoothed = prev_payload.get("net_gex_smoothed") if prev_payload else None
     net_smoothed = smooth_value(prev_net_smoothed, net_raw, SMOOTH_ALPHA)
 
@@ -562,7 +555,7 @@ def build_payload(currency: str, index_name: str, prev_payload: dict | None) -> 
         [{"strike": s, "gex": g} for s, g in strike_gex.items()],
         key=lambda x: abs(x["gex"]),
         reverse=True
-    )[:TOP_N]
+    )[:TOP_N] if strike_gex else []
 
     payload = {
         "timestamp": time.time(),
@@ -584,12 +577,6 @@ def build_payload(currency: str, index_name: str, prev_payload: dict | None) -> 
 def dual_loop(interval_sec=INTERVAL_SEC,
               pretty_interval_sec=PRETTY_INTERVAL_SEC,
               heartbeat_sec=HEARTBEAT_SEC):
-    """
-    Combined loop:
-      - Ultra: concise signal to main channel every interval_sec
-      - Pretty: detailed summary to PRETTY_CHAT_ID every pretty_interval_sec
-      - Heartbeat: log every heartbeat_sec
-    """
     print("[info] starting dual loop", flush=True)
     last_ultra_ts   = 0
     last_pretty_ts  = 0
@@ -601,28 +588,22 @@ def dual_loop(interval_sec=INTERVAL_SEC,
         try:
             now = time.time()
 
-            # Build payload once per loop iteration
             payload = build_payload(CURRENCY, INDEX_NAME, prev_payload)
-
-            # Keep a copy for "prev" before updating
             ultra_prev = prev_payload
             prev_payload = payload
 
-            # Ultra every interval_sec
             if (now - last_ultra_ts) >= interval_sec:
                 ultra_msg = to_ultra(payload, prev=ultra_prev)
                 print(ultra_msg, flush=True)
                 send_telegram_message(ultra_msg, CHAT_ID)
                 last_ultra_ts = now
 
-            # Pretty every pretty_interval_sec
             if (now - last_pretty_ts) >= pretty_interval_sec:
                 pretty_text = to_html(payload, tz=TZ)
                 print("[pretty]", pretty_text, flush=True)
                 send_telegram_message(pretty_text, PRETTY_CHAT_ID)
                 last_pretty_ts = now
 
-            # Heartbeat
             if (now - last_heartbeat) >= heartbeat_sec:
                 hb_msg = f"[heartbeat] {datetime.now(TZ).isoformat()}"
                 print(hb_msg, flush=True)
@@ -651,7 +632,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Single-shot mode
     if args.once:
         prev_payload = None
         payload = build_payload(CURRENCY, INDEX_NAME, prev_payload)
@@ -665,7 +645,6 @@ def main():
         send_telegram_message(pretty_text, PRETTY_CHAT_ID)
         return
 
-    # Dual loop mode (default for production)
     dual_loop(
         interval_sec=args.interval,
         pretty_interval_sec=args.pretty_interval,
