@@ -541,35 +541,26 @@ def send_telegram_message(text, chat_id=None):
     if chat_id is None:
         chat_id = CHAT_ID
 
-    # Decide parse mode
+    # If message starts with <, assume it's Pretty → send as plain text
     if text.strip().startswith("<"):
-        # Pretty message → convert HTML tags to MarkdownV2
-        parse_mode = "MarkdownV2"
-
-        # Escape characters for MarkdownV2
-        escape_chars = r"[](){}#+-=|.!<>"
-        for ch in escape_chars:
-            text = text.replace(ch, f"\\{ch}")
-
-        # Replace HTML-style <b> </b> with ** **
-        text = text.replace("\\<b\\>", "**").replace("\\</b\\>", "**")
-        # Replace <i> </i> with *
-        text = text.replace("\\<i\\>", "*").replace("\\</i\\>", "*")
-
-        # Replace <br> with newlines
-        text = text.replace("\\<br\\>", "\n")
-
+        # Convert HTML break tags & HTML formatting to plain text
+        text = text.replace("<br>", "\n")
+        text = text.replace("<b>", "").replace("</b>", "")
+        text = text.replace("<i>", "").replace("</i>", "")
+        parse_mode = None
     else:
-        # Ultra → regular Markdown
+        # Ultra → markdown
         parse_mode = "Markdown"
-    
+
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": parse_mode,
         "disable_web_page_preview": True,
     }
+    if parse_mode:
+        data["parse_mode"] = parse_mode
+
     try:
         r = requests.post(url, json=data, timeout=10)
         if not r.ok:
