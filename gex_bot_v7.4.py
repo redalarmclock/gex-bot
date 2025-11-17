@@ -56,6 +56,10 @@ PRETTY_CHAT_ID = (
     or CHAT_ID
 )
 
+
+# ⬇️ you can keep this debug line HERE if you want
+print(f"[debug] BOT_TOKEN loaded? {'YES' if BOT_TOKEN else 'NO'} | CHAT_ID={CHAT_ID}", flush=True)
+
 # URLs
 DERIBIT_INDEX_URL   = "https://www.deribit.com/api/v2/public/get_index_price"
 DERIBIT_SUMMARY_URL = "https://www.deribit.com/api/v2/public/get_book_summary_by_currency"
