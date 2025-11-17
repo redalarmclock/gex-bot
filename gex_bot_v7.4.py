@@ -34,9 +34,12 @@ ALERT_COOLDOWN_SEC = int(os.getenv("ALERT_COOLDOWN_SEC","900"))
 ALERTS_CHAT_ID     = os.getenv("ALERTS_CHAT_ID","")
 
 # Telegram
-BOT_TOKEN       = os.getenv("BOT_TOKEN","")
-CHAT_ID         = os.getenv("CHAT_ID","")
-PRETTY_CHAT_ID  = os.getenv("PRETTY_CHAT_ID", CHAT_ID)
+# Telegram (support old env names too)
+BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN","")
+CHAT_ID   = os.getenv("CHAT_ID")   or os.getenv("TELEGRAM_CHAT_ID","")
+
+# Pretty can have its own chat, else fall back to main
+PRETTY_CHAT_ID = os.getenv("PRETTY_CHAT_ID") or os.getenv("TELEGRAM_PRETTY_CHAT_ID","") or CHAT_ID
 
 # URLs
 DERIBIT_INDEX_URL   = "https://www.deribit.com/api/v2/public/get_index_price"
