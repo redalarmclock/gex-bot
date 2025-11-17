@@ -1,3 +1,5 @@
+print(f"[debug] BOT_TOKEN loaded? {'YES' if BOT_TOKEN else 'NO'} | CHAT_ID={CHAT_ID}", flush=True)
+
 import os, math, time, json, requests
 from collections import defaultdict
 from dataclasses import dataclass
